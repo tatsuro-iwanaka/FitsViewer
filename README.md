@@ -4,4 +4,4 @@
 #### For Mac users
 Compiled for Apple Silicon and MacOS > 11.0  
 Download from [Google Drive](https://drive.google.com/file/d/134LEpBsZQKERpFQN_z5AjupsHHr7zoqw/view?usp=sharing "FITS Viewer")  
-and allow to excute by `xattr -cr PlanetViewer.app`
+and allow to excute by `xattr -cr FitsViewer.app`
