@@ -1385,7 +1385,7 @@ int main(int argc, char** argv)
 			ImGui::Columns(1);
 			ImGui::Separator();
 			ImGui::AlignTextToFramePadding();
-			ImGui::TextColored(ImVec4(0.7f, 0.7f, 1.0f, 1.0f), "Viewport: ");
+			ImGui::TextColored(ImVec4(0.7f, 0.7f, 1.0f, 1.0f), "View: ");
 			ImGui::SameLine();
 			ImGui::Text("X[%.1f : %.1f], Y[%.1f : %.1f]", app_view.x_min, app_view.x_max, app_view.y_min, app_view.y_max);
 			ImGui::SameLine();
@@ -2019,6 +2019,12 @@ int main(int argc, char** argv)
 				app_spec_view.y_max = v_max;
 			}
 
+			std::cout << "spectral grid" << std::endl;
+			for(int i = 0; i < spectral_grid.size(); ++i)
+			{
+				std::cout << spectral_grid[i] << std::endl;
+			}
+			std::cout << "end" << std::endl;
 			DrawCustomSpectrum(spectrum, spectral_grid, app_spec_view.x_min, app_spec_view.x_max, app_spec_view.y_min, app_spec_view.y_max, current_slice);
 
 			if (spec_dragging) 
