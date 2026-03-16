@@ -10,10 +10,7 @@
 #include <map>
 #include <algorithm>
 
-// #include "SpiceUsr.h"
-
 #include "portable-file-dialogs.h"
-// #include "chronoflux.hpp"
 
 #include <mach-o/dyld.h>
 #include <libgen.h>
