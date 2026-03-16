@@ -3,11 +3,9 @@ GCC = g++ --std=c++2a -O3
 MACOS_MIN = 14.0
 TARGET = FitsViewer
 HOMEBREW_PREFIX = /opt/homebrew
-CSPICE_DIR = $(HOMEBREW_PREFIX)/Cellar/cspice/67
 
-CFLAGS = -I$(CSPICE_DIR)/include -I. -I./imgui -I./imgui/backends `pkg-config --cflags glfw3` -DGL_SILENCE_DEPRECATION -mmacosx-version-min=$(MACOS_MIN)
-LIBS = $(CSPICE_DIR)/lib/libcspice.a \
-       $(HOMEBREW_PREFIX)/lib/libglfw3.a \
+CFLAGS = -I. -I./imgui -I./imgui/backends `pkg-config --cflags glfw3` -DGL_SILENCE_DEPRECATION -mmacosx-version-min=$(MACOS_MIN)
+LIBS = $(HOMEBREW_PREFIX)/lib/libglfw3.a \
        -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo
 
 IMGUI_SRCS = imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_widgets.cpp \
