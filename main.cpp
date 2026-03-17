@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <iostream>
 #include <cmath>
@@ -467,6 +466,7 @@ float CalculateNiceStep(float range, int target_ticks)
 	return nice_fraction * std::pow(10.0f, exponent);
 }
 
+/*
 void DrawCustomSpectrum(const std::vector<float>& data, const std::vector<float>& x_grid, float x_min, float x_max, float y_min, float y_max, int current_slice)
 {
 	float x_range = x_max - x_min;
@@ -608,6 +608,203 @@ void DrawCustomSpectrum(const std::vector<float>& data, const std::vector<float>
 			ImU32 col = order_colors[current_order_idx % num_colors];
 			
 			draw_list->AddLine(ToCanvas(x_grid[i], data[i]), ToCanvas(x_grid[i+1], data[i+1]), col, 1.5f);
+		}
+	}
+
+	if (current_slice >= 0 && current_slice < (int)x_grid.size()) 
+	{
+		float phys_x = x_grid[current_slice];
+
+		float x_low = std::min(x_min, x_max);
+		float x_high = std::max(x_min, x_max);
+
+		if (phys_x >= x_low && phys_x <= x_high) 
+		{
+			float line_x = ToCanvas(phys_x, y_min).x;
+			
+			draw_list->AddLine(ImVec2(line_x, plot_p0.y), ImVec2(line_x, plot_p1.y), IM_COL32(255, 0, 0, 160), 3.0f);
+		}
+	}
+
+	draw_list->PopClipRect();
+
+	for (float val = start_x; val <= x_max + (x_step * 0.01f); val += x_step)
+	{
+		if (val < x_min || val > x_max)
+		{
+			continue;
+		}
+
+		float px = ToCanvas(val, y_min).x;
+		snprintf(buf, 32, "%g", val);
+		ImVec2 ts = ImGui::CalcTextSize(buf);
+
+		draw_list->AddText(ImVec2(px - ts.x * 0.5f, plot_p1.y + 7), tick_col, buf);
+	}
+
+	for (float val = start_y; val <= y_max + (y_step * 0.01f); val += y_step)
+	{
+		if (val < y_min || val > y_max)
+		{
+			continue;
+		}
+
+		float py = ToCanvas(0, val).y;
+
+		draw_list->AddLine(ImVec2(plot_p0.x - 5, py), ImVec2(plot_p0.x, py), tick_col);
+
+		snprintf(buf, 32, "%.2e", val);
+		ImVec2 ts = ImGui::CalcTextSize(buf);
+
+		draw_list->AddText(ImVec2(plot_p0.x - 10.0f - ts.x, py - ts.y * 0.5f), tick_col, buf);
+	}
+
+	draw_list->AddRect(plot_p0, plot_p1, IM_COL32(100, 100, 100, 255));
+	ImGui::Dummy(canvas_sz);
+}
+*/
+
+void DrawCustomSpectrum(const std::vector<float>& data, const std::vector<float>& x_grid, float x_min, float x_max, float y_min, float y_max, int current_slice)
+{
+	float x_range = x_max - x_min;
+	float x_step = CalculateNiceStep(x_range, 10);
+	float y_range = y_max - y_min;
+	float y_step = CalculateNiceStep(y_range, 5);
+	
+	if (x_range <= 0.0f)
+	{
+		x_range = 1.0f;
+	}
+
+	if (y_range <= 0.0f)
+	{
+		y_range = 1.0f;
+	}
+
+	if (x_step <= 0.0f)
+	{
+		x_step = x_range;
+	}
+
+	if (y_step <= 0.0f)
+	{
+		y_step = y_range;
+	}
+
+	ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
+	ImVec2 canvas_sz = ImVec2(ImGui::GetContentRegionAvail().x, 220);
+
+	if (canvas_sz.x < 100.0f)
+	{
+		canvas_sz.x = 100.0f;
+	}
+
+	ImVec2 canvas_p1 = ImVec2(canvas_p0.x + canvas_sz.x, canvas_p0.y + canvas_sz.y);
+
+	const float m_left = 80.0f, m_right = 20.0f, m_top = 10.0f, m_bottom = 30.0f;
+	ImVec2 plot_p0 = ImVec2(canvas_p0.x + m_left, canvas_p0.y + m_top);
+	ImVec2 plot_p1 = ImVec2(canvas_p1.x - m_right, canvas_p1.y - m_bottom);
+	ImVec2 plot_sz = ImVec2(plot_p1.x - plot_p0.x, plot_p1.y - plot_p0.y);
+
+	ImDrawList* draw_list = ImGui::GetWindowDrawList();
+	
+	draw_list->AddRectFilled(plot_p0, plot_p1, IM_COL32(20, 20, 20, 255));
+
+	if (data.empty() || plot_sz.x <= 0 || plot_sz.y <= 0)
+	{
+		ImGui::Dummy(canvas_sz);
+		return;
+	}
+
+	auto ToCanvas = [&](float wx, float wy) -> ImVec2
+	{
+		float x_norm = (x_max != x_min) ? (wx - x_min) / (x_max - x_min) : 0.0f;
+		float y_norm = (y_max != y_min) ? (wy - y_min) / (y_max - y_min) : 0.5f;
+		return ImVec2(plot_p0.x + x_norm * plot_sz.x, plot_p1.y - y_norm * plot_sz.y);
+	};
+
+	draw_list->PushClipRect(plot_p0, plot_p1, true);
+
+	ImU32 tick_col = IM_COL32(160, 160, 160, 255);
+	ImU32 grid_col = IM_COL32(45, 45, 45, 255);
+	char buf[32];
+
+	float start_x = std::floor(x_min / x_step) * x_step;
+
+	for (float val = start_x; val <= x_max + (x_step * 0.01f); val += x_step)
+	{
+		ImVec2 p = ToCanvas(val, y_min);
+		draw_list->AddLine(ImVec2(p.x, plot_p0.y), ImVec2(p.x, plot_p1.y), grid_col);
+		draw_list->AddLine(ImVec2(p.x, plot_p1.y), ImVec2(p.x, plot_p1.y + 5), tick_col);
+	}
+
+	float start_y = std::floor(y_min / y_step) * y_step;
+
+	for (float val = start_y; val <= y_max + (y_step * 0.01f); val += y_step)
+	{
+		ImVec2 p = ToCanvas(x_min, val); 
+		draw_list->AddLine(ImVec2(plot_p0.x, p.y), ImVec2(plot_p1.x, p.y), grid_col);
+		draw_list->AddLine(ImVec2(plot_p0.x - 5, p.y), ImVec2(plot_p0.x, p.y), tick_col);
+		
+		snprintf(buf, 32, "%.2e", val);
+		ImVec2 text_size = ImGui::CalcTextSize(buf);
+		draw_list->AddText(ImVec2(plot_p0.x - 10.0f - text_size.x, p.y - text_size.y * 0.5f), tick_col, buf);
+	}
+
+	if (!x_grid.empty())
+	{
+		bool is_intrinsic_descending = (x_grid.front() > x_grid.back());
+		// const ImU32 order_colors[] =
+		// {
+		// 	IM_COL32(0, 255, 255, 255),
+		// 	IM_COL32(255, 100, 255, 255),
+		// 	IM_COL32(255, 255, 100, 255),
+		// 	IM_COL32(100, 255, 100, 255),
+		// 	IM_COL32(255, 150, 50, 255),
+		// 	IM_COL32(150, 150, 255, 255)
+		// };
+
+		const ImU32 order_colors[] =
+		{
+			IM_COL32(31,  119, 180, 255),
+			IM_COL32(255, 127, 14,  255),
+			IM_COL32(44,  160, 44,  255),
+			IM_COL32(214, 39,  40,  255),
+			IM_COL32(148, 103, 189, 255),
+			IM_COL32(140, 86,  75,  255),
+			IM_COL32(227, 119, 194, 255),
+			IM_COL32(127, 127, 127, 255),
+			IM_COL32(188, 189, 34,  255),
+			IM_COL32(23,  190, 207, 255)
+		};
+		int current_order_idx = 0;
+
+		for (int i = 0; i < (int)x_grid.size() - 1; i++)
+		{
+			float x0 = x_grid[i];
+			float x1 = x_grid[i+1];
+
+			bool is_jump = false;
+			if (is_intrinsic_descending)
+			{
+				if (x1 > x0) is_jump = true;
+			}
+			else
+			{
+				if (x1 < x0) is_jump = true;
+			}
+
+			if (is_jump) {
+				current_order_idx++;
+				continue; 
+			}
+
+			float v_min = std::min(x_min, x_max);
+			float v_max = std::max(x_min, x_max);
+			if (std::max(x0, x1) < v_min || std::min(x0, x1) > v_max) continue;
+
+			ImU32 col = order_colors[current_order_idx % 6];
+			draw_list->AddLine(ToCanvas(x0, data[i]), ToCanvas(x1, data[i+1]), col, 1.5f);
 		}
 	}
 
@@ -894,6 +1091,7 @@ void ResetSpecView(SpecViewState& vp, const std::vector<float>& spec)
 	vp.initialized = true;
 }
 
+/*
 void ResetSpecView(SpecViewState& vp, const std::vector<float>& spectrum, const std::vector<float>& x_grid)
 {
 	if (!x_grid.empty())
@@ -909,13 +1107,34 @@ void ResetSpecView(SpecViewState& vp, const std::vector<float>& spectrum, const 
 
 	vp.initialized = false;
 }
+*/
+
+void ResetSpecView(SpecViewState& vp, const std::vector<float>& spectrum, const std::vector<float>& x_grid)
+{
+	if (!x_grid.empty())
+	{
+		auto [min_it, max_it] = std::minmax_element(x_grid.begin(), x_grid.end());
+		vp.x_min = *min_it;
+		vp.x_max = *max_it;
+	}
+	else
+	{
+		vp.x_min = 0.0f;
+		vp.x_max = spectrum.empty() ? 1.0f : (float)spectrum.size() - 1;
+	}
+
+	vp.initialized = false; 
+}
 
 int main(int argc, char** argv)
 {
 	SetupMacOSBundlePath();
 
 	glfwSetErrorCallback(glfw_error_callback);
-	if (!glfwInit()) return 1;
+	if (!glfwInit())
+	{
+		return 1;
+	}
 
 	const char* glsl_version = "#version 150";
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -923,7 +1142,7 @@ int main(int argc, char** argv)
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 
-	GLFWwindow* window = glfwCreateWindow(1700, 1000, "FITS Viewer", NULL, NULL);
+	GLFWwindow* window = glfwCreateWindow(1700, 1000, "FITS Cube Viewer", NULL, NULL);
 	if (window == NULL) return 1;
 
 	const float SIDEBAR_W = 500.0f;
@@ -1024,10 +1243,16 @@ int main(int argc, char** argv)
 	int axis_map[3] = {axis_x, axis_y, 2};
 	int n_dims[3] = {data.naxis1, data.naxis2, data.naxis3};
 
+	// std::ofstream output("/Users/tatsuro/Documents/fits_viewer/command_line_arguments.txt");
 	if (argc > 1)
 	{
 		std::string initial_path = argv[1];
 		global_dropped_path = initial_path;
+
+		// for(int i = 0; i < argc; ++i)
+		// {
+		// 	output << argv[1] << std::endl;
+		// }
 	}
 
 	std::string current_file_path = "No file loaded";
@@ -1047,6 +1272,8 @@ int main(int argc, char** argv)
 	std::vector<float> spectral_grid;
 
 	int selected_wcs_axis = 3;
+	bool auto_slice_mode = false;
+	bool auto_region = true;
 	
 	while (!glfwWindowShouldClose(window))
 	{
@@ -1112,6 +1339,10 @@ int main(int argc, char** argv)
 				axis_map[2] = 2;
 				selected_hdu_idx = -1;
 				selected_col_idx = -1;
+
+				n_dims[0] = data.naxis1;
+				n_dims[1] = data.naxis2;
+				n_dims[2] = data.naxis3;
 
 				for (int n = 1; n <= 3; ++n)
 				{
@@ -1238,68 +1469,88 @@ int main(int argc, char** argv)
 
 			ImGui::SameLine();
 
+			bool trigger_auto = false;
+
+			if (auto_slice_mode == true)
+			{
+				ImGui::BeginDisabled();
+			}
 			if (ImGui::Button("Auto"))
 			{
-				int nx = n_dims[axis_x];
-				int ny = n_dims[axis_y];
-				float mi = std::numeric_limits<float>::max();
-				float ma = -std::numeric_limits<float>::max();
-				bool found = false;
+				trigger_auto = true;
+			}
+			if (auto_slice_mode == true)
+			{
+				ImGui::EndDisabled();
+			}
 
-				for (int y = 0; y < ny; ++y)
+            ImGui::SameLine();
+            if (ImGui::Button("Reset"))
+            {
+                v_min = 0.0f;
+				v_max = 1.0f;
+
+                needs_update = true;
+				auto_slice_mode = false;
+				trigger_auto = false;
+
+            }
+            ImGui::SameLine();
+
+			if (auto_slice_mode == true)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.0f));
+				if (ImGui::Button("Slice")) 
 				{
-					for (int x = 0; x < nx; ++x)
-					{
-						int coords[3];
-						coords[axis_x] = x;
-						coords[axis_y] = y;
-						coords[axis_z] = current_slice;
-
-						size_t idx = (size_t)coords[2] * (data.naxis1 * data.naxis2) + (size_t)coords[1] * data.naxis1 + coords[0];
-						
-						float val = data.cube[idx];
-
-						if (std::isfinite(val))
-						{
-							if (val < mi) 
-							{
-								mi = val;
-							}
-
-							if (val > ma) 
-							{
-								ma = val;
-							}
-
-							found = true;
-						}
-					}
+					auto_slice_mode = false;
+					trigger_auto = false;
+					needs_update = true;	
 				}
-				if (found)
+				ImGui::PopStyleColor();
+			}
+			else
+			{
+				if (ImGui::Button("Slice")) 
 				{
-					v_min = mi; v_max = ma;
-
-					if (v_min == v_max)
-					{
-						v_max = v_min + 1.0f;
-					}
-
+					auto_slice_mode = true;
+					trigger_auto = true;
 					needs_update = true;
 				}
 			}
+
 			ImGui::SameLine();
 
-			if (ImGui::Button("Reset"))
-			{
-				v_min = 0.0f; v_max = 1.0f;
-				needs_update = true;
-			}
+			// if (auto_region)
+			// {
+			// 	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.0f));
+
+			// 	if (ImGui::Button("ROI"))
+			// 	{
+			// 		auto_region = false;
+			// 		trigger_auto = true;
+			// 	}
+
+			// 	ImGui::PopStyleColor();
+			// }
+			// else
+			// {
+			// 	if (ImGui::Button("ROI"))
+			// 	{
+			// 		auto_region = true;
+			// 		trigger_auto = true;
+			// 	}
+			// }
+
+			// if (auto_slice_mode && needs_update)
+			// {
+			// 	trigger_auto = true;
+			// }
 
 			ImGui::SameLine();
 			ImGui::AlignTextToFramePadding();
 			ImGui::Text("Color");
 			ImGui::SameLine();
-			ImGui::SetNextItemWidth(270.0f);
+			ImGui::SetNextItemWidth(160.0f);
 
 			if (ImGui::Combo("##Map", &selected_cmap, cmap_names, 4))
 			{
@@ -1307,7 +1558,6 @@ int main(int argc, char** argv)
 			}
 			
 			bool axis_changed = false;
-
 			
 			ImGui::AlignTextToFramePadding();
 			ImGui::Text("X");
@@ -1360,14 +1610,43 @@ int main(int argc, char** argv)
 			}
 
 			ImGui::SameLine();
-			ImGui::AlignTextToFramePadding();
-			ImGui::Text("Slice");
-			ImGui::SameLine();
-			ImGui::SetNextItemWidth(-FLT_MIN);
 
-			if (ImGui::SliderInt("##Slice", &current_slice, 0, z_max - 1))
+			bool slice_moved = false;
+			ImGui::PushButtonRepeat(true);
+
+			if (ImGui::Button("<"))
+			{
+				if (current_slice > 0)
+				{
+					current_slice--; slice_moved = true;
+				}
+			
+			}
+			ImGui::SameLine();
+			
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 20.0f);
+			if (ImGui::SliderInt("##Slice", &current_slice, 0, z_max - 1)) slice_moved = true;
+			
+			ImGui::SameLine();
+
+			if (ImGui::Button(">"))
+			{
+				if (current_slice < z_max - 1)
+				{
+					current_slice++; slice_moved = true;
+				}
+			
+			}
+			ImGui::PopButtonRepeat();
+
+			if (slice_moved) 
 			{
 				needs_update = true;
+
+				if (auto_slice_mode)
+				{
+					trigger_auto = true;
+				}
 			}
 
 			ImGui::PopStyleVar();
@@ -1387,7 +1666,7 @@ int main(int argc, char** argv)
 			ImGui::AlignTextToFramePadding();
 			ImGui::TextColored(ImVec4(0.7f, 0.7f, 1.0f, 1.0f), "View: ");
 			ImGui::SameLine();
-			ImGui::Text("X[%.1f : %.1f], Y[%.1f : %.1f]", app_view.x_min, app_view.x_max, app_view.y_min, app_view.y_max);
+			ImGui::Text("X[%.1f:%.1f], Y[%.1f:%.1f]", app_view.x_min, app_view.x_max, app_view.y_min, app_view.y_max);
 			ImGui::SameLine();
 
 			if (ImGui::Button("Reset View", ImVec2(100, 0)))
@@ -1398,85 +1677,20 @@ int main(int argc, char** argv)
 
 			ImVec2 avail_size = ImGui::GetContentRegionAvail();
 
-			const float margin_l = 50.0f, margin_r = 50.0f, margin_t = 30.0f, margin_b = 40.0f;
+			static ImVec2 last_avail_size = ImVec2(0, 0);
+			if (avail_size.x != last_avail_size.x || avail_size.y != last_avail_size.y)
+			{
+				needs_update = true;
+				last_avail_size = avail_size;
+			}
+
+			const float margin_l = 50.0f;
+			const float margin_r = 180.0f;
+			const float margin_t = 30.0f;
+			const float margin_b = 40.0f;
 
 			float disp_w = std::max(avail_size.x - (margin_l + margin_r), 1.0f);
 			float disp_h = std::max(avail_size.y - (margin_t + margin_b), 1.0f);
-			float canvas_aspect = disp_h / disp_w;
-
-			float cur_vw = app_view.x_max - app_view.x_min;
-			float cur_vh = app_view.y_max - app_view.y_min;
-
-			if (cur_vh / cur_vw < canvas_aspect) 
-			{
-				float target_vh = cur_vw * canvas_aspect;
-				float center_y = (app_view.y_min + app_view.y_max) * 0.5f;
-				app_view.y_min = center_y - target_vh * 0.5f;
-				app_view.y_max = center_y + target_vh * 0.5f;
-			} 
-			else 
-			{
-				float target_vw = cur_vh / canvas_aspect;
-				float center_x = (app_view.x_min + app_view.x_max) * 0.5f;
-				app_view.x_min = center_x - target_vw * 0.5f;
-				app_view.x_max = center_x + target_vw * 0.5f;
-			}
-
-			if (needs_update)
-			{
-				int ix0 = (int)std::floor(app_view.x_min);
-				int iy0 = (int)std::floor(app_view.y_min);
-				int ix1 = (int)std::ceil(app_view.x_max);
-				int iy1 = (int)std::ceil(app_view.y_max);
-
-				int tw = ix1 - ix0;
-				int th = iy1 - iy0;
-
-				if (tw >= 1 && th >= 1)
-				{
-					std::vector<uint8_t> rgb_buf((size_t)tw * th * 3);
-					const auto& lut = cmap_manager.palettes[selected_cmap].cpu_data;
-
-					for (int y = 0; y < th; ++y)
-					{
-						for (int x = 0; x < tw; ++x)
-						{
-							int tx = ix0 + x;
-							int ty = iy0 + y;
-							size_t out_idx = (size_t)y * tw + x;
-
-							if (tx >= 0 && tx < n_dims[axis_x] && ty >= 0 && ty < n_dims[axis_y])
-							{
-								int coords[3];
-								coords[axis_x] = tx;
-								coords[axis_y] = ty;
-								coords[axis_z] = current_slice;
-
-								size_t raw_idx = (size_t)coords[2] * ((size_t)data.naxis1 * data.naxis2) + (size_t)coords[1] * data.naxis1 + coords[0];
-
-								float val = data.cube[raw_idx];
-								float norm = std::clamp((val - v_min) / (v_max - v_min), 0.0f, 1.0f);
-								int lut_idx = (int)(norm * 255.0f);
-								
-								rgb_buf[out_idx * 3 + 0] = lut[lut_idx * 3 + 0];
-								rgb_buf[out_idx * 3 + 1] = lut[lut_idx * 3 + 1];
-								rgb_buf[out_idx * 3 + 2] = lut[lut_idx * 3 + 2];
-							}
-							else
-							{
-								rgb_buf[out_idx * 3 + 0] = 30;
-								rgb_buf[out_idx * 3 + 1] = 30;
-								rgb_buf[out_idx * 3 + 2] = 30;
-							}
-						}
-					}
-
-					glBindTexture(GL_TEXTURE_2D, image_texture);
-					glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tw, th, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb_buf.data());
-				}
-
-				needs_update = false;
-			}	
 
 			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + margin_l);
 			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + margin_t);
@@ -1510,6 +1724,8 @@ int main(int argc, char** argv)
 
 			ImU32 col_red  = IM_COL32(255, 60, 60, 255);
 			ImU32 col_blue = IM_COL32(60, 150, 255, 255);
+
+			draw_list->PushClipRect(canvas_p0, ImVec2(canvas_p0.x + canvas_sz.x, canvas_p0.y + canvas_sz.y), true);
 
 			if (show_persistent_roi)
 			{
@@ -1548,6 +1764,8 @@ int main(int argc, char** argv)
 				draw_list->AddRect(p0, p1, current_col, 0.0f, 0, 2.0f);
 				draw_list->AddRectFilled(p0, p1, fill_col);
 			}
+
+			draw_list->PopClipRect();
 
 			ImU32 tick_col = IM_COL32(200, 200, 200, 255);
 
@@ -1612,6 +1830,50 @@ int main(int argc, char** argv)
 			}
 			
 			draw_list->AddRect(canvas_pos, ImVec2(canvas_pos.x + disp_w, canvas_pos.y + disp_h), tick_col);
+
+			float cb_w = 15.0f;
+			float cb_h = disp_h;
+			float cb_x = canvas_pos.x + disp_w + 65.0f;
+			float cb_y = canvas_pos.y;
+
+			const auto& palette = cmap_manager.palettes[selected_cmap].cpu_data;
+
+			for (int i = 0; i < 256; ++i)
+			{
+				float y0 = cb_y + cb_h - ((float)(i + 1) / 256.0f) * cb_h;
+				float y1 = cb_y + cb_h - ((float)i / 256.0f) * cb_h;
+				
+				ImU32 col = IM_COL32(palette[i * 3 + 0], palette[i * 3 + 1], palette[i * 3 + 2], 255);
+				draw_list->AddRectFilled(ImVec2(cb_x, y0), ImVec2(cb_x + cb_w, y1), col);
+			}
+
+			draw_list->AddRect(ImVec2(cb_x, cb_y), ImVec2(cb_x + cb_w, cb_y + cb_h), tick_col);
+
+			float v_range = v_max - v_min;
+			float v_step = CalculateNiceStep(v_range, 8);
+			float start_v = std::floor(v_min / v_step) * v_step;
+
+			for (float val = start_v; val <= v_max + (v_step * 0.01f); val += v_step)
+			{
+				if (val < v_min || val > v_max)
+				{
+					continue;
+				}
+
+				float norm = (v_max != v_min) ? (val - v_min) / (v_max - v_min) : 0.5f;
+				float py = cb_y + cb_h - (norm * cb_h);
+
+				draw_list->AddLine(ImVec2(cb_x + cb_w, py), ImVec2(cb_x + cb_w + 5, py), tick_col);
+
+				if (std::abs(val) < v_step * 1e-4f) 
+				{
+					val = 0.0f;
+				}
+				
+				char val_buf[32];
+				snprintf(val_buf, 32, "%.3g", val);
+				draw_list->AddText(ImVec2(cb_x + cb_w + 12, py - ImGui::GetTextLineHeight() * 0.5f), tick_col, val_buf);
+			}
 
 			int fits_w = data.naxis1;
 			int fits_h = data.naxis2;
@@ -1724,6 +1986,187 @@ int main(int argc, char** argv)
 
 					needs_update = true;
 				}
+			}
+
+			if (auto_slice_mode == true && needs_update == true)
+			{
+				trigger_auto = true;
+			}
+
+			if (trigger_auto)
+			{
+				int nx = n_dims[axis_x];
+				int ny = n_dims[axis_y];
+				float mi = std::numeric_limits<float>::max();
+				float ma = -std::numeric_limits<float>::max();
+
+				int ix0 = 0;
+				int iy0 = 0;
+				int ix1 = nx;
+				int iy1 = ny;
+
+				if(auto_region == true)
+				{
+					ix0 = (int)std::floor(app_view.x_min);
+					iy0 = (int)std::floor(app_view.y_min);
+					ix1 = (int)std::ceil(app_view.x_max);
+					iy1 = (int)std::ceil(app_view.y_max);
+
+					if(ix0 < 0)
+					{
+						ix0 = 0;
+					}
+					else if(ix0 > nx)
+					{
+						ix0 = nx;
+					}
+					
+					if(iy0 < 0)
+					{
+						iy0 = 0;
+					}
+					else if(iy0 > ny)
+					{
+						iy0 = ny;
+					}
+
+					if(ix1 < 0)
+					{
+						ix1 = 0;
+					}
+					else if(ix1 > nx)
+					{
+						ix1 = nx;
+					}
+
+					if(iy1 < 0)
+					{
+						iy1 = 0;
+					}
+					else if(iy1 > ny)
+					{
+						iy1 = ny;
+					}
+				}
+
+				bool found = false;
+
+				for (int y = iy0; y < iy1; ++y)
+				{
+					for (int x = ix0; x < ix1; ++x)
+					{
+						int coords[3];
+						coords[axis_x] = x;
+						coords[axis_y] = y;
+						coords[axis_z] = current_slice;
+
+						size_t idx = (size_t)coords[2] * (data.naxis1 * data.naxis2) + (size_t)coords[1] * data.naxis1 + coords[0];
+						float val = data.cube[idx];
+
+						if (std::isfinite(val))
+						{
+							if (val < mi)
+							{
+								mi = val;
+							}
+
+							if (val > ma)
+							{
+								ma = val;
+							}
+
+							found = true;
+						}
+					}
+				}
+				if(found)
+				{
+					v_min = mi;
+					v_max = ma;
+
+					if (v_min == v_max)
+					{
+						v_max = v_min + 1.0f;
+					}
+
+					needs_update = true;
+				}
+			}
+
+			float canvas_aspect = disp_h / disp_w;
+
+			float cur_vw = app_view.x_max - app_view.x_min;
+			float cur_vh = app_view.y_max - app_view.y_min;
+
+			if (cur_vh / cur_vw < canvas_aspect) 
+			{
+				float target_vh = cur_vw * canvas_aspect;
+				float center_y = (app_view.y_min + app_view.y_max) * 0.5f;
+				app_view.y_min = center_y - target_vh * 0.5f;
+				app_view.y_max = center_y + target_vh * 0.5f;
+			} 
+			else 
+			{
+				float target_vw = cur_vh / canvas_aspect;
+				float center_x = (app_view.x_min + app_view.x_max) * 0.5f;
+				app_view.x_min = center_x - target_vw * 0.5f;
+				app_view.x_max = center_x + target_vw * 0.5f;
+			}
+
+			if (needs_update)
+			{
+				int ix0 = (int)std::floor(app_view.x_min);
+				int iy0 = (int)std::floor(app_view.y_min);
+				int ix1 = (int)std::ceil(app_view.x_max);
+				int iy1 = (int)std::ceil(app_view.y_max);
+
+				int tw = ix1 - ix0;
+				int th = iy1 - iy0;
+
+				if (tw >= 1 && th >= 1)
+				{
+					std::vector<uint8_t> rgb_buf((size_t)tw * th * 3);
+					const auto& lut = cmap_manager.palettes[selected_cmap].cpu_data;
+
+					for (int y = 0; y < th; ++y)
+					{
+						for (int x = 0; x < tw; ++x)
+						{
+							int tx = ix0 + x;
+							int ty = iy0 + y;
+							size_t out_idx = (size_t)y * tw + x;
+
+							if (tx >= 0 && tx < n_dims[axis_x] && ty >= 0 && ty < n_dims[axis_y])
+							{
+								int coords[3];
+								coords[axis_x] = tx;
+								coords[axis_y] = ty;
+								coords[axis_z] = current_slice;
+
+								size_t raw_idx = (size_t)coords[2] * ((size_t)data.naxis1 * data.naxis2) + (size_t)coords[1] * data.naxis1 + coords[0];
+
+								float val = data.cube[raw_idx];
+								float norm = std::clamp((val - v_min) / (v_max - v_min), 0.0f, 1.0f);
+								int lut_idx = (int)(norm * 255.0f);
+								
+								rgb_buf[out_idx * 3 + 0] = lut[lut_idx * 3 + 0];
+								rgb_buf[out_idx * 3 + 1] = lut[lut_idx * 3 + 1];
+								rgb_buf[out_idx * 3 + 2] = lut[lut_idx * 3 + 2];
+							}
+							else
+							{
+								rgb_buf[out_idx * 3 + 0] = 30;
+								rgb_buf[out_idx * 3 + 1] = 30;
+								rgb_buf[out_idx * 3 + 2] = 30;
+							}
+						}
+					}
+
+					glBindTexture(GL_TEXTURE_2D, image_texture);
+					glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tw, th, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb_buf.data());
+				}
+
+				needs_update = false;
 			}
 		}
 		ImGui::End();
@@ -1887,7 +2330,7 @@ int main(int argc, char** argv)
 				int ymin = std::min(display_roi.y0, display_roi.y1);
 				int ymax = std::max(display_roi.y0, display_roi.y1);
 
-				ImGui::Text("[%d:%d, %d:%d]", xmin, xmax, ymin, ymax);
+				ImGui::Text("X[%d:%d], Y[%d:%d]", xmin, xmax, ymin, ymax);
 			}
 			else
 			{
@@ -1897,7 +2340,7 @@ int main(int argc, char** argv)
 			}
 
 			char range_buf[64];
-			snprintf(range_buf, 64, "Range: %.1f - %.1f", app_spec_view.x_min, app_spec_view.x_max);
+			snprintf(range_buf, 64, "Range: [%.3f:%.3f]", app_spec_view.x_min, app_spec_view.x_max);
 			
 			float text_width = ImGui::CalcTextSize(range_buf).x;
 			float button_width = 80.0f;
@@ -1918,8 +2361,9 @@ int main(int argc, char** argv)
 			
 			if (!app_spec_view.initialized && !spectral_grid.empty())
 			{
-				app_spec_view.x_min = spectral_grid.front();
-				app_spec_view.x_max = spectral_grid.back();
+				auto [s_min_it, s_max_it] = std::minmax_element(spectral_grid.begin(), spectral_grid.end());				
+				app_spec_view.x_min = *s_min_it;
+				app_spec_view.x_max = *s_max_it;
 				app_spec_view.initialized = true;
 			}
 
@@ -1960,6 +2404,7 @@ int main(int argc, char** argv)
 				{
 					float x0 = std::min(spec_drag_start_x, spec_drag_current_x);
 					float x1 = std::max(spec_drag_start_x, spec_drag_current_x);
+					// std::cout << "range: " << x0 << ", " << x1 << std::endl;
 					float drag_dist_px = std::abs(ImGui::GetMousePos().x - ImGui::GetIO().MouseClickedPos[1].x);
 
 					if (drag_dist_px > 3.0f)
@@ -1978,35 +2423,70 @@ int main(int argc, char** argv)
 
 			ImGui::SetCursorScreenPos(canvas_p0);
 			
-			if (!spectrum.empty())
-			{
-				auto it_s = std::lower_bound(spectral_grid.begin(), spectral_grid.end(), app_spec_view.x_min);
-				auto it_e = std::lower_bound(spectral_grid.begin(), spectral_grid.end(), app_spec_view.x_max);
+			// if (!spectrum.empty())
+			// {
+			// 	auto it_s = std::lower_bound(spectral_grid.begin(), spectral_grid.end(), app_spec_view.x_min);
+			// 	auto it_e = std::lower_bound(spectral_grid.begin(), spectral_grid.end(), app_spec_view.x_max);
 				
-				int start_i = (int)std::distance(spectral_grid.begin(), it_s);
-				int end_i   = (int)std::distance(spectral_grid.begin(), it_e);
+			// 	int start_i = (int)std::distance(spectral_grid.begin(), it_s);
+			// 	int end_i   = (int)std::distance(spectral_grid.begin(), it_e);
 
-				if (start_i > end_i)
-				{
-					std::swap(start_i, end_i);
-				}
+			// 	if (start_i > end_i)
+			// 	{
+			// 		std::swap(start_i, end_i);
+			// 	}
 
-				start_i = std::clamp(start_i, 0, (int)spectrum.size() - 1);
-				end_i   = std::clamp(end_i, 0, (int)spectrum.size() - 1);
+			// 	start_i = std::clamp(start_i, 0, (int)spectrum.size() - 1);
+			// 	end_i   = std::clamp(end_i, 0, (int)spectrum.size() - 1);
 
+			// 	float v_min = FLT_MAX;
+			// 	float v_max = -FLT_MAX;
+
+			// 	for (int i = start_i; i <= end_i; i++)
+			// 	{
+			// 		if (spectrum[i] < v_min) v_min = spectrum[i];
+			// 		if (spectrum[i] > v_max) v_max = spectrum[i];
+			// 	}
+
+			// 	if (v_min == v_max || v_min == FLT_MAX)
+			// 	{
+			// 		v_min -= 1.0f;
+			// 		v_max += 1.0f;
+			// 	}
+			// 	else
+			// 	{
+			// 		float pad = (v_max - v_min) * 0.1f;
+			// 		v_min -= pad;
+			// 		v_max += pad;
+			// 	}
+
+			// 	app_spec_view.y_min = v_min;
+			// 	app_spec_view.y_max = v_max;
+			// }
+
+			if (!spectrum.empty() && spectrum.size() == spectral_grid.size())
+			{
 				float v_min = FLT_MAX;
 				float v_max = -FLT_MAX;
+				
+				float x_low  = std::min(app_spec_view.x_min, app_spec_view.x_max);
+				float x_high = std::max(app_spec_view.x_min, app_spec_view.x_max);
+				bool found = false;
 
-				for (int i = start_i; i <= end_i; i++)
+				for (size_t i = 0; i < spectral_grid.size(); ++i)
 				{
-					if (spectrum[i] < v_min) v_min = spectrum[i];
-					if (spectrum[i] > v_max) v_max = spectrum[i];
+					if (spectral_grid[i] >= x_low && spectral_grid[i] <= x_high)
+					{
+						if (spectrum[i] < v_min) v_min = spectrum[i];
+						if (spectrum[i] > v_max) v_max = spectrum[i];
+						found = true;
+					}
 				}
 
-				if (v_min == v_max || v_min == FLT_MAX)
+				if (!found || v_min == v_max || v_min == FLT_MAX)
 				{
-					v_min -= 1.0f;
-					v_max += 1.0f;
+					v_min = (v_min == FLT_MAX) ? 0.0f : v_min - 1.0f;
+					v_max = (v_max == -FLT_MAX) ? 1.0f : v_max + 1.0f;
 				}
 				else
 				{
@@ -2019,12 +2499,12 @@ int main(int argc, char** argv)
 				app_spec_view.y_max = v_max;
 			}
 
-			std::cout << "spectral grid" << std::endl;
-			for(int i = 0; i < spectral_grid.size(); ++i)
-			{
-				std::cout << spectral_grid[i] << std::endl;
-			}
-			std::cout << "end" << std::endl;
+			// std::cout << "spectral grid" << std::endl;
+			// for(int i = 0; i < spectral_grid.size(); ++i)
+			// {
+			// 	std::cout << spectral_grid[i] << std::endl;
+			// }
+			// std::cout << "end" << std::endl;
 			DrawCustomSpectrum(spectrum, spectral_grid, app_spec_view.x_min, app_spec_view.x_max, app_spec_view.y_min, app_spec_view.y_max, current_slice);
 
 			if (spec_dragging) 
