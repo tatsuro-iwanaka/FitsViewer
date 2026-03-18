@@ -399,6 +399,61 @@ class ColorMapManager
 		std::vector<Palette> palettes;
 		int current_palette_idx = 0;
 
+		std::vector<const char*> get_names() const
+		{
+			std::vector<const char*> names;
+			for (const auto& p : palettes)
+			{
+				names.push_back(p.name.c_str());
+			}
+			return names;
+		}
+
+		ColorMapManager()
+		{
+			initialize();
+		}
+
+		void initialize(void)
+		{
+			add_palette("Parula",
+			{
+				{0.0f, 0.2078f, 0.1647f, 0.5294f}, {0.1f, 0.1255f, 0.3255f, 0.8314f},
+				{0.2f, 0.0510f, 0.4588f, 0.8627f}, {0.3f, 0.0471f, 0.5765f, 0.8235f},
+				{0.4f, 0.0275f, 0.6627f, 0.7608f}, {0.5f, 0.2196f, 0.7255f, 0.6196f},
+				{0.6f, 0.4863f, 0.7490f, 0.4824f}, {0.7f, 0.7176f, 0.7412f, 0.2902f},
+				{0.8f, 0.9451f, 0.7255f, 0.2902f}, {0.9f, 0.9804f, 0.8275f, 0.1647f},
+				{1.0f, 0.9765f, 0.9843f, 0.0549f}
+			});
+
+			add_palette("Jet",
+			{
+				{0.0f/5.3f, 0.0f, 0.0f, 139/255.0f},
+				{1.0f/5.3f, 44/255.0f, 169/255.0f, 225/255.0f},
+				{2.0f/5.3f, 56/255.0f, 180/255.0f, 139/255.0f},
+				{3.5f/5.3f, 1.0f, 1.0f, 0.0f},
+				{5.0f/5.3f, 235/255.0f, 97/255.0f, 1/255.0f},
+				{5.3f/5.3f, 201/255.0f, 23/255.0f, 30/255.0f}
+			});
+
+			add_palette("Spectral",
+			{
+				{0.0000f, 0.2298f, 0.2987f, 0.7537f},
+				{0.1250f, 0.3830f, 0.5094f, 0.9174f},
+				{0.2500f, 0.5530f, 0.6889f, 0.9954f},
+				{0.3750f, 0.7222f, 0.8140f, 0.9766f},
+				{0.5000f, 0.8654f, 0.8654f, 0.8654f},
+				{0.6250f, 0.9589f, 0.7698f, 0.6780f},
+				{0.7500f, 0.9580f, 0.6028f, 0.4818f},
+				{0.8750f, 0.8692f, 0.3783f, 0.3003f},
+				{1.0000f, 0.7057f, 0.0156f, 0.1502f}
+			});
+
+			add_palette("Grayscale", {{0.0, 0,0,0}, {1.0, 1,1,1}});
+
+			return;
+		}
+
 		void add_palette(const std::string& name, const std::vector<ColorPoint>& points)
 		{
 			std::vector<uint8_t> data(256 * 3);
@@ -882,11 +937,1238 @@ void ResetSpecView(SpecViewState& vp, const std::vector<float>& spectrum, const 
 	vp.initialized = false; 
 }
 
+struct AppState
+{
+	FitsData data;
+	ViewState app_view;
+	SpecViewState app_spec_view;
+
+	// std::string axis_label_strings[3] = {"NAXIS1", "NAXIS2", "NAXIS3"};
+	std::string axis_label_strings[3];
+	const char* axis_names[3];
+	
+	int axis_x = 0;
+	int axis_y = 1;
+	int axis_map[3] = {0, 1, 2};
+	int n_dims[3] = {0, 0, 0};
+	int current_slice = 0;
+	float v_min = 0.0f;
+	float v_max = 1.0f;
+	int selected_cmap = 0;
+	
+	bool auto_slice_mode = false;
+	bool auto_region = true;
+	bool needs_update = true;
+	bool trigger_auto = false;
+	
+	ROI drag_roi;
+	ROI persistent_roi;
+	bool show_persistent_roi = false;
+	int clicked_ix = -1;
+	int clicked_iy = -1;
+	std::vector<float> spectrum;
+	std::vector<float> spectral_grid;
+	ToolMode current_tool = ToolMode::None;
+	
+	std::string current_file_path = "No file loaded";
+	std::string current_file_name = "None";
+	std::string last_directory;
+	
+	int selected_hdu_idx = -1;
+	int selected_col_idx = -1;
+	std::vector<float>* active_lut = nullptr;
+	int selected_wcs_axis = 3;
+	
+	bool spec_dragging = false;
+	float spec_drag_start_x = 0.0f;
+	float spec_drag_current_x = 0.0f;
+	int drag_button = -1;
+
+	GLuint image_texture = 0;
+};
+
+void RenderController(AppState& state)
+{
+	std::string file_to_load = "";
+		
+	if (ImGui::Button("Open FITS File"))
+	{
+		auto selection = pfd::open_file("Select a FITS file", state.last_directory, { "FITS files", "*.fits *.fit", "All files", "*" }).result();
+		if (!selection.empty())
+		{
+			file_to_load = selection[0];
+		}
+	}
+
+	ImGui::SameLine();
+	ImGui::TextDisabled("or drop FITS");
+
+	if (!global_dropped_path.empty())
+	{
+		file_to_load = global_dropped_path;
+		global_dropped_path = "";
+	}
+
+	if (!file_to_load.empty())
+	{
+		FitsData new_data;
+		if (readFITS3D(file_to_load, new_data))
+		{
+			state.data = std::move(new_data);
+
+			state.current_file_path = file_to_load;
+			state.current_file_name = std::filesystem::path(state.current_file_path).filename().string();
+			state.last_directory = std::filesystem::path(state.current_file_path).parent_path().string();
+
+			state.current_slice = 0;
+			state.axis_x = 0;
+			state.axis_y = 1;
+			state.axis_map[0] = 0;
+			state.axis_map[1] = 1;
+			state.axis_map[2] = 2;
+			state.selected_hdu_idx = -1;
+			state.selected_col_idx = -1;
+
+			state.n_dims[0] = state.data.naxis1;
+			state.n_dims[1] = state.data.naxis2;
+			state.n_dims[2] = state.data.naxis3;
+
+			for (int n = 1; n <= 3; ++n)
+			{
+				std::string key = "CTYPE" + std::to_string(n);
+
+				for (const auto& card : state.data.header_cards)
+				{
+					if (card.substr(0, 8).find(key) != std::string::npos)
+					{
+						std::string v = card.substr(10, 20);
+						size_t first = v.find_first_not_of(" '");
+						size_t last = v.find_last_not_of(" '");
+
+						if (first != std::string::npos) 
+						{
+							state.axis_label_strings[n - 1] = "AXIS" + std::to_string(n) + " (" + v.substr(first, last - first + 1) + ")";
+						}
+
+						break;
+					}
+				}
+			}
+
+			for (int i = 0; i < 3; ++i)
+			{
+				state.axis_names[i] = state.axis_label_strings[i].c_str();
+			}
+
+			ResetView(state.app_view, state.data.naxis1, state.data.naxis2);
+			state.app_spec_view.initialized = false; 
+			state.app_spec_view.x_min = 0; 
+			state.app_spec_view.x_max = 1;
+			state.app_spec_view.y_min = 0; 
+			state.app_spec_view.y_max = 1;
+
+			state.clicked_ix = -1;
+			state.clicked_iy = -1;
+			state.show_persistent_roi = false;
+			
+			state.spec_dragging = false;
+			state.spectrum.clear();
+			state.spectral_grid.clear();
+			state.active_lut = nullptr;
+			state.app_spec_view.initialized = false;
+			state.app_spec_view.mode = XAxisMode::Index;
+
+			state.needs_update = true;
+		}
+		else
+		{
+			pfd::message("Error", "Failed to load FITS file.", pfd::choice::ok, pfd::icon::error);
+		}
+	}
+
+	ImGui::Separator();
+	ImGui::TextColored(ImVec4(0.7f, 0.7f, 1.0f, 1.0f), "Current File:");
+	ImGui::TextWrapped("%s", state.current_file_name.c_str());
+
+	return;
+}
+
+void RenderHeaderViewer(const AppState& state)
+{
+	if (state.data.header_cards.empty())
+	{
+		ImGui::Text("No data loaded.");
+	}
+	else
+	{
+		ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_Resizable;
+
+		if (ImGui::BeginTable("HeaderTable", 2, table_flags, ImVec2(0, 0)))
+		{
+			
+			ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+			ImGui::TableSetupColumn("Value / Comment", ImGuiTableColumnFlags_WidthFixed, 800.0f);
+
+			ImGui::TableSetupScrollFreeze(0, 1);
+
+			ImGui::TableHeadersRow();
+
+			for (const auto& card : state.data.header_cards)
+			{
+				std::string key = card.substr(0, 8);
+				if (key == "END     ") break;
+
+				ImGui::TableNextRow();
+				ImGui::TableSetColumnIndex(0);
+				ImGui::TextUnformatted(key.c_str());
+
+				ImGui::TableSetColumnIndex(1);
+				ImGui::TextUnformatted(card.substr(8).c_str());
+			}
+			ImGui::EndTable();
+		}
+	}
+	
+	return;
+}
+
+void RenderImageViewer(AppState& state, ColorMapManager& cmap_manager)
+{
+	if (state.data.cube.empty())
+	{
+		return;
+	}
+	else
+	{
+		if (!state.app_view.initialized)
+		{
+			ResetView(state.app_view, state.data.naxis1, state.data.naxis2);
+			state.needs_update = true;
+		}
+
+		state.n_dims[0] = state.data.naxis1;
+		state.n_dims[1] = state.data.naxis2;
+		state.n_dims[2] = state.data.naxis3;
+		int axis_z = 3 - (state.axis_x + state.axis_y);
+		
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
+		ImGui::AlignTextToFramePadding();
+		ImGui::Text("Min/Max");
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(240.0f);
+
+		if (ImGui::DragFloatRange2("##Cut", &state.v_min, &state.v_max, (state.v_max - state.v_min) * 0.01f))
+		{
+			state.needs_update = true;
+		}
+
+		ImGui::SameLine();
+
+		if (state.auto_slice_mode == true)
+		{
+			ImGui::BeginDisabled();
+		}
+		if (ImGui::Button("Auto"))
+		{
+			state.trigger_auto = true;
+		}
+		if (state.auto_slice_mode == true)
+		{
+			ImGui::EndDisabled();
+		}
+
+		ImGui::SameLine();
+		if (ImGui::Button("Reset"))
+		{
+			state.v_min = 0.0f;
+			state.v_max = 1.0f;
+
+			state.needs_update = true;
+			state.auto_slice_mode = false;
+			state.trigger_auto = false;
+
+		}
+		ImGui::SameLine();
+
+		if (state.auto_slice_mode == true)
+		{
+			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.0f));
+			if (ImGui::Button("Slice")) 
+			{
+				state.auto_slice_mode = false;
+				state.trigger_auto = false;
+				state.needs_update = true;	
+			}
+			ImGui::PopStyleColor();
+		}
+		else
+		{
+			if (ImGui::Button("Slice")) 
+			{
+				state.auto_slice_mode = true;
+				state.trigger_auto = true;
+				state.needs_update = true;
+			}
+		}
+
+		ImGui::SameLine();
+
+		ImGui::SameLine();
+		ImGui::AlignTextToFramePadding();
+		ImGui::Text("Color");
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(160.0f);
+
+		if (ImGui::Combo("##Map", &state.selected_cmap, cmap_manager.get_names().data(), (int)cmap_manager.get_names().size()))
+		{
+			state.needs_update = true;
+		}
+		
+		bool axis_changed = false;
+		
+		ImGui::AlignTextToFramePadding();
+		ImGui::Text("X");
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(240.0f);
+
+		if (ImGui::Combo("##X", &state.axis_x, state.axis_names, 3))
+		{
+			axis_changed = true;
+		}
+
+		ImGui::SameLine();
+		ImGui::AlignTextToFramePadding();
+		ImGui::Text("Y");
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(240.0f);
+
+		if (ImGui::Combo("##Y", &state.axis_y, state.axis_names, 3))
+		{
+			axis_changed = true;
+		}
+
+		if (state.axis_x == state.axis_y)
+		{
+			state.axis_y = (state.axis_x + 1) % 3;
+			axis_changed = true;
+		}
+
+		axis_z = 3 - (state.axis_x + state.axis_y);
+		int z_max = state.n_dims[axis_z];
+
+		if (axis_changed)
+		{
+			state.axis_map[0] = state.axis_x;
+			state.axis_map[1] = state.axis_y;
+			state.axis_map[2] = 3 - (state.axis_x + state.axis_y);
+
+			ResetView(state.app_view, state.n_dims[state.axis_x], state.n_dims[state.axis_y]);
+
+			int z_max = state.n_dims[state.axis_map[2]];
+			state.current_slice = std::clamp(state.current_slice, 0, z_max - 1);
+
+			state.needs_update = true;
+			state.spectrum.clear();
+			state.show_persistent_roi = false;
+			state.clicked_ix = -1;
+			state.clicked_iy = -1;
+			state.app_spec_view.initialized = false;
+			state.app_spec_view.mode = XAxisMode::Index;
+			axis_changed = false;
+		}
+
+		ImGui::SameLine();
+
+		bool slice_moved = false;
+		ImGui::PushButtonRepeat(true);
+
+		if (ImGui::Button("<"))
+		{
+			if (state.current_slice > 0)
+			{
+				state.current_slice--;
+				slice_moved = true;
+			}
+		
+		}
+		ImGui::SameLine();
+		
+		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 20.0f);
+		if (ImGui::SliderInt("##Slice", &state.current_slice, 0, z_max - 1))
+		{
+			slice_moved = true;
+		}
+		
+		ImGui::SameLine();
+
+		if (ImGui::Button(">"))
+		{
+			if (state.current_slice < z_max - 1)
+			{
+				state.current_slice++;
+				slice_moved = true;
+			}
+		
+		}
+		ImGui::PopButtonRepeat();
+
+		if (slice_moved) 
+		{
+			state.needs_update = true;
+
+			if (state.auto_slice_mode)
+			{
+				state.trigger_auto = true;
+			}
+		}
+
+		ImGui::PopStyleVar();
+
+		ImGui::Separator();
+		ImGui::Columns(3, "Guides", false);
+		ImGui::SetColumnWidth(0, 250.0f);
+		ImGui::BulletText("L Drag: Avr. Spectrum");
+		ImGui::BulletText("Mid Drag: Move");
+		ImGui::NextColumn();
+		ImGui::BulletText("L Click: Pnt. Spectrum");
+		ImGui::BulletText("Wheel: Zoom");
+		ImGui::NextColumn();
+		ImGui::BulletText("R Drag: ROI");
+		ImGui::Columns(1);
+		ImGui::Separator();
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextColored(ImVec4(0.7f, 0.7f, 1.0f, 1.0f), "View: ");
+		ImGui::SameLine();
+		ImGui::Text("X[%.1f:%.1f], Y[%.1f:%.1f]", state.app_view.x_min, state.app_view.x_max, state.app_view.y_min, state.app_view.y_max);
+		ImGui::SameLine();
+
+		if (ImGui::Button("Reset View", ImVec2(100, 0)))
+		{
+			ResetView(state.app_view, state.n_dims[state.axis_x], state.n_dims[state.axis_y]);
+			state.needs_update = true;
+		}
+
+		ImVec2 avail_size = ImGui::GetContentRegionAvail();
+
+		static ImVec2 last_avail_size = ImVec2(0, 0);
+		if (avail_size.x != last_avail_size.x || avail_size.y != last_avail_size.y)
+		{
+			state.needs_update = true;
+			last_avail_size = avail_size;
+		}
+
+		const float margin_l = 50.0f;
+		const float margin_r = 180.0f;
+		const float margin_t = 30.0f;
+		const float margin_b = 40.0f;
+
+		float disp_w = std::max(avail_size.x - (margin_l + margin_r), 1.0f);
+		float disp_h = std::max(avail_size.y - (margin_t + margin_b), 1.0f);
+
+		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + margin_l);
+		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + margin_t);
+
+		ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+		ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+		int ix0 = (int)std::floor(state.app_view.x_min);
+		int iy0 = (int)std::floor(state.app_view.y_min);
+		int ix1 = (int)std::ceil(state.app_view.x_max);
+		int iy1 = (int)std::ceil(state.app_view.y_max);
+		float tw_f = (float)std::max(ix1 - ix0, 1);
+		float th_f = (float)std::max(iy1 - iy0, 1);
+
+		float u0 = (state.app_view.x_min - (float)ix0) / tw_f;
+		float u1 = (state.app_view.x_max - (float)ix0) / tw_f;
+		float v0 = (state.app_view.y_min - (float)iy0) / th_f;
+		float v1 = (state.app_view.y_max - (float)iy0) / th_f;
+
+		ImGui::Image((void*)(intptr_t)state.image_texture, ImVec2(disp_w, disp_h), ImVec2(u0, v1), ImVec2(u1, v0));
+
+		ImVec2 canvas_p0 = canvas_pos;
+		ImVec2 canvas_sz = ImVec2(disp_w, disp_h);
+
+		auto FitsToScreen = [&](float fx, float fy) -> ImVec2
+		{
+			float rx = (fx - state.app_view.x_min) / (state.app_view.x_max - state.app_view.x_min);
+			float ry = (fy - state.app_view.y_min) / (state.app_view.y_max - state.app_view.y_min);
+			return ImVec2(canvas_pos.x + rx * disp_w, canvas_pos.y + (1.0f - ry) * disp_h);
+		};
+
+		ImU32 col_red  = IM_COL32(255, 60, 60, 255);
+		ImU32 col_blue = IM_COL32(60, 150, 255, 255);
+
+		draw_list->PushClipRect(canvas_p0, ImVec2(canvas_p0.x + canvas_sz.x, canvas_p0.y + canvas_sz.y), true);
+
+		if (state.show_persistent_roi)
+		{
+			float x_start = (float)std::min(state.persistent_roi.x0, state.persistent_roi.x1);
+			float x_end   = (float)std::max(state.persistent_roi.x0, state.persistent_roi.x1) + 1.0f;
+			float y_start = (float)std::min(state.persistent_roi.y0, state.persistent_roi.y1);
+			float y_end   = (float)std::max(state.persistent_roi.y0, state.persistent_roi.y1) + 1.0f;
+
+			ImVec2 p0 = FitsToScreen(x_start, y_start);
+			ImVec2 p1 = FitsToScreen(x_end, y_end);
+			
+			draw_list->AddRect(p0, p1, col_red, 0.0f, 0, 2.0f);
+			draw_list->AddRectFilled(p0, p1, IM_COL32(255, 60, 60, 30)); 
+		}
+		else if (state.clicked_ix >= 0 && state.clicked_iy >= 0)
+		{
+			ImVec2 p0 = FitsToScreen(state.clicked_ix, state.clicked_iy);
+			ImVec2 p1 = FitsToScreen(state.clicked_ix + 1, state.clicked_iy + 1);
+			draw_list->AddRect(p0, p1, col_red, 0.0f, 0, 2.0f);
+			draw_list->AddRectFilled(p0, p1, IM_COL32(255, 60, 60, 30));
+		}
+
+		if (state.drag_roi.active)
+		{
+			float dx0 = (float)std::min(state.drag_roi.x0, state.drag_roi.x1);
+			float dx1 = (float)std::max(state.drag_roi.x0, state.drag_roi.x1) + 1.0f;
+			float dy0 = (float)std::min(state.drag_roi.y0, state.drag_roi.y1);
+			float dy1 = (float)std::max(state.drag_roi.y0, state.drag_roi.y1) + 1.0f;
+
+			ImVec2 p0 = FitsToScreen(dx0, dy0);
+			ImVec2 p1 = FitsToScreen(dx1, dy1);
+			
+			ImU32 current_col = (state.drag_button == 0) ? col_red : col_blue;
+			ImU32 fill_col = (state.drag_button == 0) ? IM_COL32(255, 60, 60, 40) : IM_COL32(60, 150, 255, 40);
+			
+			draw_list->AddRect(p0, p1, current_col, 0.0f, 0, 2.0f);
+			draw_list->AddRectFilled(p0, p1, fill_col);
+		}
+
+		draw_list->PopClipRect();
+
+		ImU32 tick_col = IM_COL32(200, 200, 200, 255);
+
+		float f_xmin = state.app_view.x_min;
+		float f_xmax = state.app_view.x_max;
+		float f_w = f_xmax - f_xmin;
+
+		float f_ymin = state.app_view.y_min;
+		float f_ymax = state.app_view.y_max;
+		float f_h = f_ymax - f_ymin;
+
+		float x_step = CalculateNiceStep(f_w, 7); 
+		float start_x = std::floor(f_xmin / x_step) * x_step;
+
+		for (float val = start_x; val <= f_xmax; val += x_step)
+		{
+			float centered_val = val + 0.5f;
+
+			if (centered_val < f_xmin || centered_val > f_xmax)
+			{
+				continue;
+			}
+
+			float x_ratio = (f_w > 0) ? (centered_val - f_xmin) / f_w : 0.0f;
+			float x_pos = canvas_pos.x + x_ratio * disp_w;
+			
+			draw_list->AddLine(ImVec2(x_pos, canvas_pos.y + disp_h), ImVec2(x_pos, canvas_pos.y + disp_h + 5), tick_col);
+			draw_list->AddLine(ImVec2(x_pos, canvas_pos.y), ImVec2(x_pos, canvas_pos.y - 5), tick_col);
+			
+			char buf[16]; snprintf(buf, 16, "%g", val);
+			ImVec2 ts = ImGui::CalcTextSize(buf);
+
+			draw_list->AddText(ImVec2(x_pos - ts.x * 0.5f, canvas_pos.y + disp_h + 7), tick_col, buf);
+			draw_list->AddText(ImVec2(x_pos - ts.x * 0.5f, canvas_pos.y - 20), tick_col, buf);
+		}
+
+		float y_step = CalculateNiceStep(f_h, 7); 
+		float start_y = std::floor(f_ymin / y_step) * y_step;
+
+		for (float val = start_y; val <= f_ymax; val += y_step)
+		{
+			float centered_val = val + 0.5f;
+			if (centered_val < f_ymin || centered_val > f_ymax)
+			{
+				continue;
+			}
+
+			float y_ratio = (f_h > 0) ? (centered_val - f_ymin) / f_h : 0.0f;
+			float y_pos = canvas_pos.y + disp_h - (y_ratio * disp_h);
+			
+			draw_list->AddLine(ImVec2(canvas_pos.x - 5, y_pos), ImVec2(canvas_pos.x, y_pos), tick_col);
+			draw_list->AddLine(ImVec2(canvas_pos.x + disp_w, y_pos), ImVec2(canvas_pos.x + disp_w + 5, y_pos), tick_col);
+			
+			char buf[16]; snprintf(buf, 16, "%g", val);
+			ImVec2 ts = ImGui::CalcTextSize(buf);
+
+			float left_label_x = canvas_pos.x - 10.0f - ts.x;
+			draw_list->AddText(ImVec2(left_label_x, y_pos - ts.y * 0.5f), tick_col, buf);
+			
+			float right_label_x = canvas_pos.x + disp_w + 10.0f;
+			draw_list->AddText(ImVec2(right_label_x, y_pos - ts.y * 0.5f), tick_col, buf);
+		}
+		
+		draw_list->AddRect(canvas_pos, ImVec2(canvas_pos.x + disp_w, canvas_pos.y + disp_h), tick_col);
+
+		float cb_w = 15.0f;
+		float cb_h = disp_h;
+		float cb_x = canvas_pos.x + disp_w + 65.0f;
+		float cb_y = canvas_pos.y;
+
+		const auto& palette = cmap_manager.palettes[state.selected_cmap].cpu_data;
+
+		for (int i = 0; i < 256; ++i)
+		{
+			float y0 = cb_y + cb_h - ((float)(i + 1) / 256.0f) * cb_h;
+			float y1 = cb_y + cb_h - ((float)i / 256.0f) * cb_h;
+			
+			ImU32 col = IM_COL32(palette[i * 3 + 0], palette[i * 3 + 1], palette[i * 3 + 2], 255);
+			draw_list->AddRectFilled(ImVec2(cb_x, y0), ImVec2(cb_x + cb_w, y1), col);
+		}
+
+		draw_list->AddRect(ImVec2(cb_x, cb_y), ImVec2(cb_x + cb_w, cb_y + cb_h), tick_col);
+
+		float v_range = state.v_max - state.v_min;
+		float v_step = CalculateNiceStep(v_range, 8);
+		float start_v = std::floor(state.v_min / v_step) * v_step;
+
+		for (float val = start_v; val <= state.v_max + (v_step * 0.01f); val += v_step)
+		{
+			if (val < state.v_min || val > state.v_max)
+			{
+				continue;
+			}
+
+			float norm = (state.v_max != state.v_min) ? (val - state.v_min) / (state.v_max - state.v_min) : 0.5f;
+			float py = cb_y + cb_h - (norm * cb_h);
+
+			draw_list->AddLine(ImVec2(cb_x + cb_w, py), ImVec2(cb_x + cb_w + 5, py), tick_col);
+
+			if (std::abs(val) < v_step * 1e-4f) 
+			{
+				val = 0.0f;
+			}
+			
+			char val_buf[32];
+			snprintf(val_buf, 32, "%.3g", val);
+			draw_list->AddText(ImVec2(cb_x + cb_w + 12, py - ImGui::GetTextLineHeight() * 0.5f), tick_col, val_buf);
+		}
+
+		int fits_w = state.data.naxis1;
+		int fits_h = state.data.naxis2;
+		ImVec2 m_delta = ImGui::GetIO().MouseDelta;
+
+		state.n_dims[0] = state.data.naxis1;
+		state.n_dims[1] = state.data.naxis2;
+		state.n_dims[2] = state.data.naxis3;
+
+		int cur_nx = state.n_dims[state.axis_x];
+		int cur_ny = state.n_dims[state.axis_y];
+
+		if (ImGui::IsItemHovered()) 
+		{
+			if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) 
+			{
+				float fits_units_per_pixel_x = (state.app_view.x_max - state.app_view.x_min) / disp_w;
+				float fits_units_per_pixel_y = (state.app_view.y_max - state.app_view.y_min) / disp_h;
+				state.app_view.x_min -= m_delta.x * fits_units_per_pixel_x;
+				state.app_view.x_max -= m_delta.x * fits_units_per_pixel_x;
+				state.app_view.y_min += m_delta.y * fits_units_per_pixel_y;
+				state.app_view.y_max += m_delta.y * fits_units_per_pixel_y;
+				state.needs_update = true;
+			}
+
+			if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) 
+			{
+				if (!state.drag_roi.active) 
+				{
+					ScreenToFitsIdx(ImGui::GetIO().MouseClickedPos[0], &state.drag_roi.x0, &state.drag_roi.y0, state.app_view, canvas_p0, canvas_sz, cur_nx, cur_ny);
+					state.drag_roi.active = true;
+					state.drag_button = 0;
+				}
+			}
+
+			if (ImGui::IsMouseDragging(ImGuiMouseButton_Right)) 
+			{
+				if (!state.drag_roi.active) 
+				{
+					ScreenToFitsIdx(ImGui::GetIO().MouseClickedPos[1], &state.drag_roi.x0, &state.drag_roi.y0, state.app_view, canvas_p0, canvas_sz, cur_nx, cur_ny);
+					state.drag_roi.active = true;
+					state.drag_button = 1;
+				}
+			}
+		}
+
+		if (state.drag_roi.active) 
+		{
+			ScreenToFitsIdx(ImGui::GetMousePos(), &state.drag_roi.x1, &state.drag_roi.y1, state.app_view, canvas_p0, canvas_sz, cur_nx, cur_ny);
+		}
+
+		if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) 
+		{
+			if (state.drag_roi.active && state.drag_button == 0) 
+			{
+				state.spectrum = CalculateAverageSpectrum(state.data, state.drag_roi, state.axis_map, state.n_dims);
+				state.persistent_roi = state.drag_roi;
+				state.show_persistent_roi = true;
+				state.drag_roi.active = false;
+				state.drag_button = -1;
+				state.needs_update = true;
+			} 
+			else if (!state.drag_roi.active && ImGui::IsItemHovered()) 
+			{
+				ScreenToFitsIdx(ImGui::GetMousePos(), &state.clicked_ix, &state.clicked_iy, state.app_view, canvas_p0, canvas_sz, cur_nx, cur_ny);
+				state.spectrum = ExtractPointSpectrum(state.data, state.clicked_ix, state.clicked_iy, state.axis_map, state.n_dims);
+				state.show_persistent_roi = false;
+				state.needs_update = true;
+			}
+		}
+
+		if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) 
+		{
+			if (state.drag_roi.active && state.drag_button == 1) 
+			{
+				ApplyZoom(state.drag_roi, state.app_view);
+				state.drag_roi.active = false;
+				state.drag_button = -1;
+				state.needs_update = true;
+			}
+		}
+
+		float wheel = ImGui::GetIO().MouseWheel;
+
+		if (wheel != 0.0f && ImGui::IsItemHovered())
+		{
+			float zoom_factor = (wheel > 0.0f) ? 0.9f : 1.1f;
+			float canvas_aspect = canvas_sz.y / canvas_sz.x;
+
+			float u = std::clamp((ImGui::GetMousePos().x - canvas_p0.x) / canvas_sz.x, 0.0f, 1.0f);
+			float v = std::clamp((ImGui::GetMousePos().y - canvas_p0.y) / canvas_sz.y, 0.0f, 1.0f);
+			
+			float fx = state.app_view.x_min + u * (state.app_view.x_max - state.app_view.x_min);
+			float fy = state.app_view.y_min + (1.0f - v) * (state.app_view.y_max - state.app_view.y_min);
+
+			float cur_w = state.app_view.x_max - state.app_view.x_min;
+			float next_w = cur_w * zoom_factor;
+
+			const float MIN_VISIBLE_WIDTH = 0.5f;
+			float data_aspect = (float)cur_ny / (float)cur_nx;
+			float max_w = (data_aspect > canvas_aspect) ? ((float)cur_ny / canvas_aspect) : (float)cur_nx;
+
+			next_w = std::clamp(next_w, MIN_VISIBLE_WIDTH, max_w);
+			float next_h = next_w * canvas_aspect;
+
+			if (std::abs(next_w - cur_w) > 1e-5f)
+			{
+				state.app_view.x_min = fx - u * next_w;
+				state.app_view.x_max = state.app_view.x_min + next_w;
+				state.app_view.y_min = fy - (1.0f - v) * next_h;
+				state.app_view.y_max = state.app_view.y_min + next_h;
+
+				state.needs_update = true;
+			}
+		}
+
+		if(state.auto_slice_mode == true && state.needs_update == true)
+		{
+			state.trigger_auto = true;
+		}
+
+		if(state.trigger_auto)
+		{
+			int nx = state.n_dims[state.axis_x];
+			int ny = state.n_dims[state.axis_y];
+			float mi = std::numeric_limits<float>::max();
+			float ma = -std::numeric_limits<float>::max();
+
+			int ix0 = 0;
+			int iy0 = 0;
+			int ix1 = nx;
+			int iy1 = ny;
+
+			if(state.auto_region == true)
+			{
+				ix0 = (int)std::floor(state.app_view.x_min);
+				iy0 = (int)std::floor(state.app_view.y_min);
+				ix1 = (int)std::ceil(state.app_view.x_max);
+				iy1 = (int)std::ceil(state.app_view.y_max);
+
+				if(ix0 < 0)
+				{
+					ix0 = 0;
+				}
+				else if(ix0 > nx)
+				{
+					ix0 = nx;
+				}
+				
+				if(iy0 < 0)
+				{
+					iy0 = 0;
+				}
+				else if(iy0 > ny)
+				{
+					iy0 = ny;
+				}
+
+				if(ix1 < 0)
+				{
+					ix1 = 0;
+				}
+				else if(ix1 > nx)
+				{
+					ix1 = nx;
+				}
+
+				if(iy1 < 0)
+				{
+					iy1 = 0;
+				}
+				else if(iy1 > ny)
+				{
+					iy1 = ny;
+				}
+			}
+
+			bool found = false;
+
+			for (int y = iy0; y < iy1; ++y)
+			{
+				for (int x = ix0; x < ix1; ++x)
+				{
+					int coords[3];
+					coords[state.axis_x] = x;
+					coords[state.axis_y] = y;
+					coords[axis_z] = state.current_slice;
+
+					size_t idx = (size_t)coords[2] * (state.data.naxis1 * state.data.naxis2) + (size_t)coords[1] * state.data.naxis1 + coords[0];
+					float val = state.data.cube[idx];
+
+					if (std::isfinite(val))
+					{
+						if (val < mi)
+						{
+							mi = val;
+						}
+
+						if (val > ma)
+						{
+							ma = val;
+						}
+
+						found = true;
+					}
+				}
+			}
+			if(found)
+			{
+				state.v_min = mi;
+				state.v_max = ma;
+
+				if (state.v_min == state.v_max)
+				{
+					state.v_max = state.v_min + 1.0f;
+				}
+
+				state.needs_update = true;
+			}
+		}
+
+		float canvas_aspect = disp_h / disp_w;
+
+		float cur_vw = state.app_view.x_max - state.app_view.x_min;
+		float cur_vh = state.app_view.y_max - state.app_view.y_min;
+
+		if (cur_vh / cur_vw < canvas_aspect) 
+		{
+			float target_vh = cur_vw * canvas_aspect;
+			float center_y = (state.app_view.y_min + state.app_view.y_max) * 0.5f;
+			state.app_view.y_min = center_y - target_vh * 0.5f;
+			state.app_view.y_max = center_y + target_vh * 0.5f;
+		} 
+		else 
+		{
+			float target_vw = cur_vh / canvas_aspect;
+			float center_x = (state.app_view.x_min + state.app_view.x_max) * 0.5f;
+			state.app_view.x_min = center_x - target_vw * 0.5f;
+			state.app_view.x_max = center_x + target_vw * 0.5f;
+		}
+
+		if (state.needs_update)
+		{
+			int ix0 = (int)std::floor(state.app_view.x_min);
+			int iy0 = (int)std::floor(state.app_view.y_min);
+			int ix1 = (int)std::ceil(state.app_view.x_max);
+			int iy1 = (int)std::ceil(state.app_view.y_max);
+
+			int tw = ix1 - ix0;
+			int th = iy1 - iy0;
+
+			if (tw >= 1 && th >= 1)
+			{
+				std::vector<uint8_t> rgb_buf((size_t)tw * th * 3);
+				const auto& lut = cmap_manager.palettes[state.selected_cmap].cpu_data;
+
+				for (int y = 0; y < th; ++y)
+				{
+					for (int x = 0; x < tw; ++x)
+					{
+						int tx = ix0 + x;
+						int ty = iy0 + y;
+						size_t out_idx = (size_t)y * tw + x;
+
+						if (tx >= 0 && tx < state.n_dims[state.axis_x] && ty >= 0 && ty < state.n_dims[state.axis_y])
+						{
+							int coords[3];
+							coords[state.axis_x] = tx;
+							coords[state.axis_y] = ty;
+							coords[axis_z] = state.current_slice;
+
+							size_t raw_idx = (size_t)coords[2] * ((size_t)state.data.naxis1 * state.data.naxis2) + (size_t)coords[1] * state.data.naxis1 + coords[0];
+
+							float val = state.data.cube[raw_idx];
+							float norm = std::clamp((val - state.v_min) / (state.v_max - state.v_min), 0.0f, 1.0f);
+							int lut_idx = (int)(norm * 255.0f);
+							
+							rgb_buf[out_idx * 3 + 0] = lut[lut_idx * 3 + 0];
+							rgb_buf[out_idx * 3 + 1] = lut[lut_idx * 3 + 1];
+							rgb_buf[out_idx * 3 + 2] = lut[lut_idx * 3 + 2];
+						}
+						else
+						{
+							rgb_buf[out_idx * 3 + 0] = 30;
+							rgb_buf[out_idx * 3 + 1] = 30;
+							rgb_buf[out_idx * 3 + 2] = 30;
+						}
+					}
+				}
+
+				glBindTexture(GL_TEXTURE_2D, state.image_texture);
+				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tw, th, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb_buf.data());
+			}
+
+			state.needs_update = false;
+		}
+	}
+	
+	return;
+}
+
+void RenderSpectrumViewer(AppState& state)
+{
+	auto ScreenToSpecX = [&](ImVec2 mouse_pos, ImVec2 plot_p0, ImVec2 plot_sz, const SpecViewState& vp) -> float
+	{
+		float u = std::clamp((mouse_pos.x - plot_p0.x) / plot_sz.x, 0.0f, 1.0f);
+		return vp.x_min + u * (vp.x_max - vp.x_min);
+	};
+	
+	if (!state.spectrum.empty())
+	{
+		ImGui::Separator();
+		const char* modes[] = {"Index", "WCS", "LUT"};
+		int current_mode = (int)state.app_spec_view.mode;
+
+		ImGui::AlignTextToFramePadding();
+		ImGui::Text("X Axis Mode");
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(140.0f);
+
+		if (ImGui::Combo("##X-Axis Mode", &current_mode, modes, 3))
+		{
+			state.app_spec_view.mode = (XAxisMode)current_mode;
+			state.app_spec_view.initialized = false;
+		}
+
+		if(state.app_spec_view.mode != XAxisMode::Index)
+		{
+			ImGui::SameLine();
+		}
+		
+		if (state.app_spec_view.mode == XAxisMode::Index)
+		{
+			;
+		}
+		else if (state.app_spec_view.mode == XAxisMode::WCS)
+		{
+			int auto_axis = 4 - (state.axis_x + state.axis_y);
+
+			if (state.selected_wcs_axis != auto_axis) 
+			{
+				state.selected_wcs_axis = auto_axis;
+				UpdateWCSParams(state.data, state.selected_wcs_axis);
+				state.app_spec_view.initialized = false;
+			}
+
+			ImGui::SameLine();			
+			ImGui::Text("CRVAL: %.4e, CDELT: %.4e, CRPIX: %.1f", state.data.wcs_crval, state.data.wcs_cdelt, state.data.wcs_crpix);
+		}
+		else if (state.app_spec_view.mode == XAxisMode::Table)
+		{
+			std::string current_label = state.active_lut ? state.data.extensions[state.selected_hdu_idx].columns[state.selected_col_idx].name : "Select Column...";
+			
+			ImGui::SetNextItemWidth(300.0f);
+			if (ImGui::BeginCombo("##LUT_Tree", current_label.c_str()))
+			{
+				int naxes[3] = {state.data.naxis1, state.data.naxis2, state.data.naxis3};
+				int spec_axis_idx = 3 - (state.axis_x + state.axis_y);
+				
+				for (int h = 0; h < (int)state.data.extensions.size(); ++h)
+				{
+					auto& hdu = state.data.extensions[h];
+					
+					if (ImGui::TreeNode((void*)(intptr_t)h, "HDU %d: %s", h + 1, hdu.name.c_str()))
+					{
+						for (int c = 0; c < (int)hdu.columns.size(); ++c)
+						{
+							bool size_match = (hdu.columns[c].data.size() == (size_t)naxes[spec_axis_idx]);
+							bool is_selected = (state.selected_hdu_idx == h && state.selected_col_idx == c);
+
+							if (!size_match)
+							{
+								ImGui::BeginDisabled();
+							}
+
+							std::string item_label = hdu.columns[c].name + " (" + std::to_string(hdu.columns[c].data.size()) + ")";
+
+							if (ImGui::Selectable(item_label.c_str(), is_selected))
+							{
+								state.selected_hdu_idx = h;
+								state.selected_col_idx = c;
+								state.active_lut = &hdu.columns[c].data;
+
+								if (state.active_lut && !state.active_lut->empty())
+								{
+									state.app_spec_view.x_min = state.active_lut->front();
+									state.app_spec_view.x_max = state.active_lut->back();
+								}
+
+								state.app_spec_view.initialized = false;
+							}
+
+							if (!size_match)
+							{
+								ImGui::EndDisabled();
+
+								if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+								{
+									ImGui::SetTooltip("Dimension mismatch. Expected: %d", state.data.naxis1);
+								}
+							}
+						}
+						ImGui::TreePop();
+					}
+				}
+				ImGui::EndCombo();
+			}
+		}
+
+		size_t spec_size = state.spectrum.size();
+		state.spectral_grid.resize(spec_size);
+
+		if (state.app_spec_view.mode == XAxisMode::WCS)
+		{
+			for (size_t i = 0; i < spec_size; ++i)
+			{
+				state.spectral_grid[i] = state.data.wcs_crval + ((float)i + 1.0f - state.data.wcs_crpix) * state.data.wcs_cdelt;
+			}
+		}
+		else if (state.app_spec_view.mode == XAxisMode::Table && state.active_lut)
+		{
+			if (state.active_lut->size() == spec_size)
+			{
+				state.spectral_grid = *state.active_lut; 
+			}
+			else
+			{
+				for (size_t i = 0; i < spec_size; ++i)
+				{
+					state.spectral_grid[i] = (float)i;
+				}
+			}
+		}
+		else
+		{
+			for (size_t i = 0; i < spec_size; ++i)
+			{
+				state.spectral_grid[i] = (float)i;
+			}
+		}
+		
+		if (!state.app_spec_view.initialized)
+		{
+			ResetSpecView(state.app_spec_view, state.spectrum, state.spectral_grid);
+		}
+		
+		if (state.current_tool == ToolMode::Average || state.show_persistent_roi)
+		{
+			const ROI& display_roi = state.drag_roi.active ? state.drag_roi : state.persistent_roi;
+
+			ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "ROI Average:");
+			ImGui::SameLine();
+
+			int xmin = std::min(display_roi.x0, display_roi.x1);
+			int xmax = std::max(display_roi.x0, display_roi.x1);
+			int ymin = std::min(display_roi.y0, display_roi.y1);
+			int ymax = std::max(display_roi.y0, display_roi.y1);
+
+			ImGui::Text("X[%d:%d], Y[%d:%d]", xmin, xmax, ymin, ymax);
+		}
+		else
+		{
+			ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Point Probe:");
+			ImGui::SameLine();
+			ImGui::Text("x=%d, y=%d", state.clicked_ix, state.clicked_iy);
+		}
+
+		char range_buf[64];
+		snprintf(range_buf, 64, "Range: [%.3f:%.3f]", state.app_spec_view.x_min, state.app_spec_view.x_max);
+		
+		float text_width = ImGui::CalcTextSize(range_buf).x;
+		float button_width = 80.0f;
+		float spacing = ImGui::GetStyle().ItemSpacing.x;
+		float padding = ImGui::GetStyle().WindowPadding.x;
+
+		float total_needed_width = text_width + spacing + button_width + padding;
+		ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - total_needed_width));
+
+		ImGui::AlignTextToFramePadding();
+		ImGui::Text("%s", range_buf);
+		ImGui::SameLine();
+
+		if (ImGui::Button("Reset", ImVec2(button_width, 0)))
+		{
+			ResetSpecView(state.app_spec_view, state.spectrum, state.spectral_grid);
+		}
+		
+		if (!state.app_spec_view.initialized && !state.spectral_grid.empty())
+		{
+			auto [s_min_it, s_max_it] = std::minmax_element(state.spectral_grid.begin(), state.spectral_grid.end());				
+			state.app_spec_view.x_min = *s_min_it;
+			state.app_spec_view.x_max = *s_max_it;
+			state.app_spec_view.initialized = true;
+		}
+
+		ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
+		ImVec2 canvas_sz = ImVec2(ImGui::GetContentRegionAvail().x, 220);
+
+		const float m_left = 80.0f;
+		const float m_right = 20.0f;
+		const float m_top = 10.0f;
+		const float m_bottom = 30.0f;
+
+		ImVec2 plot_p0 = ImVec2(canvas_p0.x + m_left, canvas_p0.y + m_top);
+		ImVec2 plot_sz = ImVec2(canvas_sz.x - (m_left + m_right), canvas_sz.y - (m_top + m_bottom));
+
+		auto ScreenToSpecX = [](ImVec2 pos, ImVec2 p0, ImVec2 sz, const SpecViewState& vp) -> float
+		{
+			float u = std::clamp((pos.x - p0.x) / sz.x, 0.0f, 1.0f);
+			return vp.x_min + u * (vp.x_max - vp.x_min);
+		};
+
+		ImGui::InvisibleButton("spec_interaction", canvas_sz);
+		bool is_hovered = ImGui::IsItemHovered();
+
+		if (is_hovered)
+		{
+			if (ImGui::IsMouseDragging(ImGuiMouseButton_Right))
+			{
+				if (!state.spec_dragging)
+				{
+					state.spec_drag_start_x = ScreenToSpecX(ImGui::GetIO().MouseClickedPos[1], plot_p0, plot_sz, state.app_spec_view);
+					state.spec_dragging = true;
+				}
+
+				state.spec_drag_current_x = ScreenToSpecX(ImGui::GetMousePos(), plot_p0, plot_sz, state.app_spec_view);
+			}
+
+			if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && state.spec_dragging)
+			{
+				float x0 = std::min(state.spec_drag_start_x, state.spec_drag_current_x);
+				float x1 = std::max(state.spec_drag_start_x, state.spec_drag_current_x);
+				// std::cout << "range: " << x0 << ", " << x1 << std::endl;
+				float drag_dist_px = std::abs(ImGui::GetMousePos().x - ImGui::GetIO().MouseClickedPos[1].x);
+
+				if (drag_dist_px > 3.0f)
+				{
+					state.app_spec_view.x_min = x0;
+					state.app_spec_view.x_max = x1;
+				}
+				state.spec_dragging = false;
+			}
+
+			if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Right))
+			{
+				ResetSpecView(state.app_spec_view, state.spectrum, state.spectral_grid);
+			}
+		}
+
+		ImGui::SetCursorScreenPos(canvas_p0);
+
+		if (!state.spectrum.empty() && state.spectrum.size() == state.spectral_grid.size())
+		{
+			float v_min = FLT_MAX;
+			float v_max = -FLT_MAX;
+			
+			float x_low  = std::min(state.app_spec_view.x_min, state.app_spec_view.x_max);
+			float x_high = std::max(state.app_spec_view.x_min, state.app_spec_view.x_max);
+			bool found = false;
+
+			for (size_t i = 0; i < state.spectral_grid.size(); ++i)
+			{
+				if (state.spectral_grid[i] >= x_low && state.spectral_grid[i] <= x_high)
+				{
+					if (state.spectrum[i] < v_min)
+					{
+						v_min = state.spectrum[i];
+					}
+
+					if (state.spectrum[i] > v_max)
+					{
+						v_max = state.spectrum[i];
+					}
+
+					found = true;
+				}
+			}
+
+			if (!found || v_min == v_max || v_min == FLT_MAX)
+			{
+				v_min = (v_min == FLT_MAX) ? 0.0f : v_min - 1.0f;
+				v_max = (v_max == -FLT_MAX) ? 1.0f : v_max + 1.0f;
+			}
+			else
+			{
+				float pad = (v_max - v_min) * 0.1f;
+				v_min -= pad;
+				v_max += pad;
+			}
+
+			state.app_spec_view.y_min = v_min;
+			state.app_spec_view.y_max = v_max;
+		}
+
+		DrawCustomSpectrum(state.spectrum, state.spectral_grid, state.app_spec_view.x_min, state.app_spec_view.x_max, state.app_spec_view.y_min, state.app_spec_view.y_max, state.current_slice);
+
+		if (state.spec_dragging) 
+		{
+			ImDrawList* draw_list = ImGui::GetWindowDrawList();
+			float view_w = state.app_spec_view.x_max - state.app_spec_view.x_min;
+			float px0 = plot_p0.x + (std::min(state.spec_drag_start_x, state.spec_drag_current_x) - state.app_spec_view.x_min) / view_w * plot_sz.x;
+			float px1 = plot_p0.x + (std::max(state.spec_drag_start_x, state.spec_drag_current_x) - state.app_spec_view.x_min) / view_w * plot_sz.x;
+			
+			draw_list->AddRectFilled(ImVec2(px0, plot_p0.y), ImVec2(px1, plot_p0.y + plot_sz.y), IM_COL32(60, 150, 255, 60));
+			draw_list->AddLine(ImVec2(px0, plot_p0.y), ImVec2(px0, plot_p0.y + plot_sz.y), IM_COL32(60, 150, 255, 200));
+			draw_list->AddLine(ImVec2(px1, plot_p0.y), ImVec2(px1, plot_p0.y + plot_sz.y), IM_COL32(60, 150, 255, 200));
+		}
+	}
+	else
+	{
+		ImGui::TextDisabled("Click or drag on the image to analyze data.");
+	}
+	
+	return;
+}
+
 int main(int argc, char** argv)
 {
 	SetupMacOSBundlePath();
 
 	glfwSetErrorCallback(glfw_error_callback);
+
 	if (!glfwInit())
 	{
 		return 1;
@@ -899,7 +2181,11 @@ int main(int argc, char** argv)
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 
 	GLFWwindow* window = glfwCreateWindow(1700, 1000, "FITS Cube Viewer", NULL, NULL);
-	if (window == NULL) return 1;
+	
+	if (window == NULL)
+	{
+		return 1;
+	}
 
 	const float SIDEBAR_W = 500.0f;
 	const float IMAGE_MIN_W = 750.0f;
@@ -916,9 +2202,11 @@ int main(int argc, char** argv)
 	ImGui_ImplGlfw_InitForOpenGL(window, true);
 	ImGui_ImplOpenGL3_Init(glsl_version);
 
-	GLuint image_texture = 0;
-	glGenTextures(1, &image_texture);
-	glBindTexture(GL_TEXTURE_2D, image_texture);
+	ColorMapManager cmap_manager;
+	AppState state;
+	
+	glGenTextures(1, &state.image_texture);
+	glBindTexture(GL_TEXTURE_2D, state.image_texture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -926,104 +2214,11 @@ int main(int argc, char** argv)
 
 	glfwSetDropCallback(window, drop_callback);
 
-	ColorMapManager cmap_manager;
-
-	cmap_manager.add_palette("Parula",
-	{
-		{0.0f, 0.2078f, 0.1647f, 0.5294f}, {0.1f, 0.1255f, 0.3255f, 0.8314f},
-		{0.2f, 0.0510f, 0.4588f, 0.8627f}, {0.3f, 0.0471f, 0.5765f, 0.8235f},
-		{0.4f, 0.0275f, 0.6627f, 0.7608f}, {0.5f, 0.2196f, 0.7255f, 0.6196f},
-		{0.6f, 0.4863f, 0.7490f, 0.4824f}, {0.7f, 0.7176f, 0.7412f, 0.2902f},
-		{0.8f, 0.9451f, 0.7255f, 0.2902f}, {0.9f, 0.9804f, 0.8275f, 0.1647f},
-		{1.0f, 0.9765f, 0.9843f, 0.0549f}
-	});
-
-	cmap_manager.add_palette("Jet",
-	{
-		{0.0f/5.3f, 0.0f, 0.0f, 139/255.0f},
-		{1.0f/5.3f, 44/255.0f, 169/255.0f, 225/255.0f},
-		{2.0f/5.3f, 56/255.0f, 180/255.0f, 139/255.0f},
-		{3.5f/5.3f, 1.0f, 1.0f, 0.0f},
-		{5.0f/5.3f, 235/255.0f, 97/255.0f, 1/255.0f},
-		{5.3f/5.3f, 201/255.0f, 23/255.0f, 30/255.0f}
-	});
-
-	cmap_manager.add_palette("Spectral",
-	{
-		{0.0000f, 0.2298f, 0.2987f, 0.7537f},
-		{0.1250f, 0.3830f, 0.5094f, 0.9174f},
-		{0.2500f, 0.5530f, 0.6889f, 0.9954f},
-		{0.3750f, 0.7222f, 0.8140f, 0.9766f},
-		{0.5000f, 0.8654f, 0.8654f, 0.8654f},
-		{0.6250f, 0.9589f, 0.7698f, 0.6780f},
-		{0.7500f, 0.9580f, 0.6028f, 0.4818f},
-		{0.8750f, 0.8692f, 0.3783f, 0.3003f},
-		{1.0000f, 0.7057f, 0.0156f, 0.1502f}
-	});
-
-	cmap_manager.add_palette("Grayscale", {{0.0, 0,0,0}, {1.0, 1,1,1}});
-
-	int axis_x = 0;
-	int axis_y = 1;
-
-	std::string axis_label_strings[3] = {"NAXIS1", "NAXIS2", "NAXIS3"};
-	
-	const char* axis_names[3] =
-	{ 
-		axis_label_strings[0].c_str(), 
-		axis_label_strings[1].c_str(), 
-		axis_label_strings[2].c_str() 
-	};
-
-	int current_slice = 0;
-	float v_min = 0.0f;
-	float v_max = 1.0f;
-	bool needs_update = true;
-	int selected_cmap = 0;
-
-	const char* cmap_names[] = {"Parula", "Jet", "Spectral", "Grayscale"};
-
-	int clicked_ix = -1, clicked_iy = -1;
-
-	FitsData data;
-
-	ToolMode current_tool = ToolMode::None;
-	ROI drag_roi;
-	ROI persistent_roi;
-	bool show_persistent_roi = false;
-	
-	ViewState app_view;
-	SpecViewState app_spec_view;
-	std::vector<float> spectrum;
-
-	int axis_map[3] = {axis_x, axis_y, 2};
-	int n_dims[3] = {data.naxis1, data.naxis2, data.naxis3};
-
 	if (argc > 1)
 	{
 		std::string initial_path = argv[1];
 		global_dropped_path = initial_path;
 	}
-
-	std::string current_file_path = "No file loaded";
-	std::string current_file_name = "None";
-	std::string last_directory = getenv("HOME");
-
-	bool spec_dragging = false;
-	float spec_drag_start_x = 0.0f;
-	float spec_drag_current_x = 0.0f;
-
-	int drag_button = -1;
-
-	int selected_hdu_idx = -1;
-	int selected_col_idx = -1;
-
-	std::vector<float>* active_lut = nullptr;
-	std::vector<float> spectral_grid;
-
-	int selected_wcs_axis = 3;
-	bool auto_slice_mode = false;
-	bool auto_region = true;
 	
 	while (!glfwWindowShouldClose(window))
 	{
@@ -1050,1230 +2245,25 @@ int main(int argc, char** argv)
 		ImGui::SetNextWindowPos(v_pos);
 		ImGui::SetNextWindowSize(ImVec2(SIDEBAR_W, CONTROLS_H));
 		ImGui::Begin("FITS Controller", nullptr, static_flags);
-		std::string file_to_load = "";
-		
-		if (ImGui::Button("Open FITS File"))
-		{
-			auto selection = pfd::open_file("Select a FITS file", last_directory, { "FITS files", "*.fits *.fit", "All files", "*" }).result();
-			if (!selection.empty())
-			{
-				file_to_load = selection[0];
-			}
-		}
-
-		ImGui::SameLine();
-		ImGui::TextDisabled("or drop FITS");
-
-		if (!global_dropped_path.empty())
-		{
-			file_to_load = global_dropped_path;
-			global_dropped_path = "";
-		}
-
-		if (!file_to_load.empty())
-		{
-			FitsData new_data;
-			if (readFITS3D(file_to_load, new_data))
-			{
-				data = std::move(new_data);
-
-				current_file_path = file_to_load;
-				current_file_name = std::filesystem::path(current_file_path).filename().string();
-				last_directory = std::filesystem::path(current_file_path).parent_path().string();
-
-				current_slice = 0;
-				axis_x = 0;
-				axis_y = 1;
-				axis_map[0] = 0;
-				axis_map[1] = 1;
-				axis_map[2] = 2;
-				selected_hdu_idx = -1;
-				selected_col_idx = -1;
-
-				n_dims[0] = data.naxis1;
-				n_dims[1] = data.naxis2;
-				n_dims[2] = data.naxis3;
-
-				for (int n = 1; n <= 3; ++n)
-				{
-					std::string key = "CTYPE" + std::to_string(n);
-
-					for (const auto& card : data.header_cards)
-					{
-						if (card.substr(0, 8).find(key) != std::string::npos)
-						{
-							std::string v = card.substr(10, 20);
-							size_t first = v.find_first_not_of(" '");
-							size_t last = v.find_last_not_of(" '");
-
-							if (first != std::string::npos) 
-							{
-								axis_label_strings[n-1] = "AXIS" + std::to_string(n) + " (" + v.substr(first, last - first + 1) + ")";
-							}
-
-							break;
-						}
-					}
-				}
-
-				for (int i = 0; i < 3; ++i)
-				{
-					axis_names[i] = axis_label_strings[i].c_str();
-				}
-
-				ResetView(app_view, data.naxis1, data.naxis2);
-				app_spec_view.initialized = false; 
-				app_spec_view.x_min = 0; 
-				app_spec_view.x_max = 1;
-				app_spec_view.y_min = 0; 
-				app_spec_view.y_max = 1;
-
-				clicked_ix = -1;
-				clicked_iy = -1;
-				show_persistent_roi = false;
-				
-				spec_dragging = false;
-				spectrum.clear();
-				spectral_grid.clear();
-				active_lut = nullptr;
-				app_spec_view.initialized = false;
-				app_spec_view.mode = XAxisMode::Index;
-
-				needs_update = true;
-			}
-			else
-			{
-				pfd::message("Error", "Failed to load FITS file.", pfd::choice::ok, pfd::icon::error);
-			}
-		}
-
-		ImGui::Separator();
-		ImGui::TextColored(ImVec4(0.7f, 0.7f, 1.0f, 1.0f), "Current File:");
-		ImGui::TextWrapped("%s", current_file_name.c_str());
+		RenderController(state);
 		ImGui::End();
 
 		ImGui::SetNextWindowPos(ImVec2(v_pos.x, v_pos.y + CONTROLS_H));
 		ImGui::SetNextWindowSize(ImVec2(SIDEBAR_W, v_size.y - CONTROLS_H));
 		ImGui::Begin("FITS Header Viewer", nullptr, static_flags);
-		if (data.header_cards.empty())
-		{
-			ImGui::Text("No data loaded.");
-		}
-		else
-		{
-			ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_Resizable;
-
-			if (ImGui::BeginTable("HeaderTable", 2, table_flags, ImVec2(0, 0)))
-			{
-				
-				ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-				ImGui::TableSetupColumn("Value / Comment", ImGuiTableColumnFlags_WidthFixed, 800.0f);
-
-				ImGui::TableSetupScrollFreeze(0, 1);
-
-				ImGui::TableHeadersRow();
-
-				for (const auto& card : data.header_cards)
-				{
-					std::string key = card.substr(0, 8);
-					if (key == "END     ") break;
-
-					ImGui::TableNextRow();
-					ImGui::TableSetColumnIndex(0);
-					ImGui::TextUnformatted(key.c_str());
-
-					ImGui::TableSetColumnIndex(1);
-					ImGui::TextUnformatted(card.substr(8).c_str());
-				}
-				ImGui::EndTable();
-			}
-		}
+		RenderHeaderViewer(state);
 		ImGui::End();
 
 		ImGui::SetNextWindowPos(ImVec2(v_pos.x + SIDEBAR_W, v_pos.y));
 		ImGui::SetNextWindowSize(ImVec2(main_w, main_h));
 		ImGui::Begin("FITS Image View", nullptr, static_flags);
-		if (!data.cube.empty())
-		{
-			if (!app_view.initialized)
-			{
-				ResetView(app_view, data.naxis1, data.naxis2);
-				needs_update = true;
-			}
-
-			n_dims[0] = data.naxis1;
-			n_dims[1] = data.naxis2;
-			n_dims[2] = data.naxis3;
-			int axis_z = 3 - (axis_x + axis_y);
-			
-			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
-			ImGui::AlignTextToFramePadding();
-			ImGui::Text("Min/Max");
-			ImGui::SameLine();
-			ImGui::SetNextItemWidth(240.0f);
-
-			if (ImGui::DragFloatRange2("##Cut", &v_min, &v_max, (v_max - v_min) * 0.01f))
-			{
-				needs_update = true;
-			}
-
-			ImGui::SameLine();
-
-			bool trigger_auto = false;
-
-			if (auto_slice_mode == true)
-			{
-				ImGui::BeginDisabled();
-			}
-			if (ImGui::Button("Auto"))
-			{
-				trigger_auto = true;
-			}
-			if (auto_slice_mode == true)
-			{
-				ImGui::EndDisabled();
-			}
-
-            ImGui::SameLine();
-            if (ImGui::Button("Reset"))
-            {
-                v_min = 0.0f;
-				v_max = 1.0f;
-
-                needs_update = true;
-				auto_slice_mode = false;
-				trigger_auto = false;
-
-            }
-            ImGui::SameLine();
-
-			if (auto_slice_mode == true)
-			{
-				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.0f));
-				if (ImGui::Button("Slice")) 
-				{
-					auto_slice_mode = false;
-					trigger_auto = false;
-					needs_update = true;	
-				}
-				ImGui::PopStyleColor();
-			}
-			else
-			{
-				if (ImGui::Button("Slice")) 
-				{
-					auto_slice_mode = true;
-					trigger_auto = true;
-					needs_update = true;
-				}
-			}
-
-			ImGui::SameLine();
-
-			// if (auto_region)
-			// {
-			// 	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.0f));
-
-			// 	if (ImGui::Button("ROI"))
-			// 	{
-			// 		auto_region = false;
-			// 		trigger_auto = true;
-			// 	}
-
-			// 	ImGui::PopStyleColor();
-			// }
-			// else
-			// {
-			// 	if (ImGui::Button("ROI"))
-			// 	{
-			// 		auto_region = true;
-			// 		trigger_auto = true;
-			// 	}
-			// }
-
-			// if (auto_slice_mode && needs_update)
-			// {
-			// 	trigger_auto = true;
-			// }
-
-			ImGui::SameLine();
-			ImGui::AlignTextToFramePadding();
-			ImGui::Text("Color");
-			ImGui::SameLine();
-			ImGui::SetNextItemWidth(160.0f);
-
-			if (ImGui::Combo("##Map", &selected_cmap, cmap_names, 4))
-			{
-				needs_update = true;
-			}
-			
-			bool axis_changed = false;
-			
-			ImGui::AlignTextToFramePadding();
-			ImGui::Text("X");
-			ImGui::SameLine();
-			ImGui::SetNextItemWidth(240.0f);
-
-			if (ImGui::Combo("##X", &axis_x, axis_names, 3))
-			{
-				axis_changed = true;
-			}
-
-			ImGui::SameLine();
-			ImGui::AlignTextToFramePadding();
-			ImGui::Text("Y");
-			ImGui::SameLine();
-			ImGui::SetNextItemWidth(240.0f);
-
-			if (ImGui::Combo("##Y", &axis_y, axis_names, 3))
-			{
-				axis_changed = true;
-			}
-
-			if (axis_x == axis_y)
-			{
-				axis_y = (axis_x + 1) % 3; axis_changed = true;
-			}
-
-			axis_z = 3 - (axis_x + axis_y);
-			int z_max = n_dims[axis_z];
-
-			if (axis_changed)
-			{
-				axis_map[0] = axis_x;
-				axis_map[1] = axis_y;
-				axis_map[2] = 3 - (axis_x + axis_y);
-
-				ResetView(app_view, n_dims[axis_x], n_dims[axis_y]);
-
-				int z_max = n_dims[axis_map[2]];
-				current_slice = std::clamp(current_slice, 0, z_max - 1);
-
-				needs_update = true;
-				spectrum.clear();
-				show_persistent_roi = false;
-				clicked_ix = -1;
-				clicked_iy = -1;
-				app_spec_view.initialized = false;
-				app_spec_view.mode = XAxisMode::Index;
-				axis_changed = false;
-			}
-
-			ImGui::SameLine();
-
-			bool slice_moved = false;
-			ImGui::PushButtonRepeat(true);
-
-			if (ImGui::Button("<"))
-			{
-				if (current_slice > 0)
-				{
-					current_slice--; slice_moved = true;
-				}
-			
-			}
-			ImGui::SameLine();
-			
-			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 20.0f);
-			if (ImGui::SliderInt("##Slice", &current_slice, 0, z_max - 1)) slice_moved = true;
-			
-			ImGui::SameLine();
-
-			if (ImGui::Button(">"))
-			{
-				if (current_slice < z_max - 1)
-				{
-					current_slice++; slice_moved = true;
-				}
-			
-			}
-			ImGui::PopButtonRepeat();
-
-			if (slice_moved) 
-			{
-				needs_update = true;
-
-				if (auto_slice_mode)
-				{
-					trigger_auto = true;
-				}
-			}
-
-			ImGui::PopStyleVar();
-
-			ImGui::Separator();
-			ImGui::Columns(3, "Guides", false);
-			ImGui::SetColumnWidth(0, 250.0f);
-			ImGui::BulletText("L Drag: Avr. Spectrum");
-			ImGui::BulletText("Mid Drag: Move");
-			ImGui::NextColumn();
-			ImGui::BulletText("L Click: Pnt. Spectrum");
-			ImGui::BulletText("Wheel: Zoom");
-			ImGui::NextColumn();
-			ImGui::BulletText("R Drag: ROI");
-			ImGui::Columns(1);
-			ImGui::Separator();
-			ImGui::AlignTextToFramePadding();
-			ImGui::TextColored(ImVec4(0.7f, 0.7f, 1.0f, 1.0f), "View: ");
-			ImGui::SameLine();
-			ImGui::Text("X[%.1f:%.1f], Y[%.1f:%.1f]", app_view.x_min, app_view.x_max, app_view.y_min, app_view.y_max);
-			ImGui::SameLine();
-
-			if (ImGui::Button("Reset View", ImVec2(100, 0)))
-			{
-				ResetView(app_view, n_dims[axis_x], n_dims[axis_y]);
-				needs_update = true;
-			}
-
-			ImVec2 avail_size = ImGui::GetContentRegionAvail();
-
-			static ImVec2 last_avail_size = ImVec2(0, 0);
-			if (avail_size.x != last_avail_size.x || avail_size.y != last_avail_size.y)
-			{
-				needs_update = true;
-				last_avail_size = avail_size;
-			}
-
-			const float margin_l = 50.0f;
-			const float margin_r = 180.0f;
-			const float margin_t = 30.0f;
-			const float margin_b = 40.0f;
-
-			float disp_w = std::max(avail_size.x - (margin_l + margin_r), 1.0f);
-			float disp_h = std::max(avail_size.y - (margin_t + margin_b), 1.0f);
-
-			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + margin_l);
-			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + margin_t);
-
-			ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-			ImDrawList* draw_list = ImGui::GetWindowDrawList();
-
-			int ix0 = (int)std::floor(app_view.x_min);
-			int iy0 = (int)std::floor(app_view.y_min);
-			int ix1 = (int)std::ceil(app_view.x_max);
-			int iy1 = (int)std::ceil(app_view.y_max);
-			float tw_f = (float)std::max(ix1 - ix0, 1);
-			float th_f = (float)std::max(iy1 - iy0, 1);
-
-			float u0 = (app_view.x_min - (float)ix0) / tw_f;
-			float u1 = (app_view.x_max - (float)ix0) / tw_f;
-			float v0 = (app_view.y_min - (float)iy0) / th_f;
-			float v1 = (app_view.y_max - (float)iy0) / th_f;
-
-			ImGui::Image((void*)(intptr_t)image_texture, ImVec2(disp_w, disp_h), ImVec2(u0, v1), ImVec2(u1, v0));
-
-			ImVec2 canvas_p0 = canvas_pos;
-			ImVec2 canvas_sz = ImVec2(disp_w, disp_h);
-
-			auto FitsToScreen = [&](float fx, float fy) -> ImVec2
-			{
-				float rx = (fx - app_view.x_min) / (app_view.x_max - app_view.x_min);
-				float ry = (fy - app_view.y_min) / (app_view.y_max - app_view.y_min);
-				return ImVec2(canvas_pos.x + rx * disp_w, canvas_pos.y + (1.0f - ry) * disp_h);
-			};
-
-			ImU32 col_red  = IM_COL32(255, 60, 60, 255);
-			ImU32 col_blue = IM_COL32(60, 150, 255, 255);
-
-			draw_list->PushClipRect(canvas_p0, ImVec2(canvas_p0.x + canvas_sz.x, canvas_p0.y + canvas_sz.y), true);
-
-			if (show_persistent_roi)
-			{
-				float x_start = (float)std::min(persistent_roi.x0, persistent_roi.x1);
-				float x_end   = (float)std::max(persistent_roi.x0, persistent_roi.x1) + 1.0f;
-				float y_start = (float)std::min(persistent_roi.y0, persistent_roi.y1);
-				float y_end   = (float)std::max(persistent_roi.y0, persistent_roi.y1) + 1.0f;
-
-				ImVec2 p0 = FitsToScreen(x_start, y_start);
-				ImVec2 p1 = FitsToScreen(x_end, y_end);
-				
-				draw_list->AddRect(p0, p1, col_red, 0.0f, 0, 2.0f);
-				draw_list->AddRectFilled(p0, p1, IM_COL32(255, 60, 60, 30)); 
-			}
-			else if (clicked_ix >= 0 && clicked_iy >= 0)
-			{
-				ImVec2 p0 = FitsToScreen(clicked_ix, clicked_iy);
-				ImVec2 p1 = FitsToScreen(clicked_ix + 1, clicked_iy + 1);
-				draw_list->AddRect(p0, p1, col_red, 0.0f, 0, 2.0f);
-				draw_list->AddRectFilled(p0, p1, IM_COL32(255, 60, 60, 30));
-			}
-
-			if (drag_roi.active)
-			{
-				float dx0 = (float)std::min(drag_roi.x0, drag_roi.x1);
-				float dx1 = (float)std::max(drag_roi.x0, drag_roi.x1) + 1.0f;
-				float dy0 = (float)std::min(drag_roi.y0, drag_roi.y1);
-				float dy1 = (float)std::max(drag_roi.y0, drag_roi.y1) + 1.0f;
-
-				ImVec2 p0 = FitsToScreen(dx0, dy0);
-				ImVec2 p1 = FitsToScreen(dx1, dy1);
-				
-				ImU32 current_col = (drag_button == 0) ? col_red : col_blue;
-				ImU32 fill_col = (drag_button == 0) ? IM_COL32(255, 60, 60, 40) : IM_COL32(60, 150, 255, 40);
-				
-				draw_list->AddRect(p0, p1, current_col, 0.0f, 0, 2.0f);
-				draw_list->AddRectFilled(p0, p1, fill_col);
-			}
-
-			draw_list->PopClipRect();
-
-			ImU32 tick_col = IM_COL32(200, 200, 200, 255);
-
-			float f_xmin = app_view.x_min;
-			float f_xmax = app_view.x_max;
-			float f_w = f_xmax - f_xmin;
-
-			float f_ymin = app_view.y_min;
-			float f_ymax = app_view.y_max;
-			float f_h = f_ymax - f_ymin;
-
-			float x_step = CalculateNiceStep(f_w, 7); 
-			float start_x = std::floor(f_xmin / x_step) * x_step;
-
-			for (float val = start_x; val <= f_xmax; val += x_step)
-			{
-				float centered_val = val + 0.5f;
-
-				if (centered_val < f_xmin || centered_val > f_xmax)
-				{
-					continue;
-				}
-
-				float x_ratio = (f_w > 0) ? (centered_val - f_xmin) / f_w : 0.0f;
-				float x_pos = canvas_pos.x + x_ratio * disp_w;
-				
-				draw_list->AddLine(ImVec2(x_pos, canvas_pos.y + disp_h), ImVec2(x_pos, canvas_pos.y + disp_h + 5), tick_col);
-				draw_list->AddLine(ImVec2(x_pos, canvas_pos.y), ImVec2(x_pos, canvas_pos.y - 5), tick_col);
-				
-				char buf[16]; snprintf(buf, 16, "%g", val);
-				ImVec2 ts = ImGui::CalcTextSize(buf);
-
-				draw_list->AddText(ImVec2(x_pos - ts.x * 0.5f, canvas_pos.y + disp_h + 7), tick_col, buf);
-				draw_list->AddText(ImVec2(x_pos - ts.x * 0.5f, canvas_pos.y - 20), tick_col, buf);
-			}
-
-			float y_step = CalculateNiceStep(f_h, 7); 
-			float start_y = std::floor(f_ymin / y_step) * y_step;
-
-			for (float val = start_y; val <= f_ymax; val += y_step)
-			{
-				float centered_val = val + 0.5f;
-				if (centered_val < f_ymin || centered_val > f_ymax)
-				{
-					continue;
-				}
-
-				float y_ratio = (f_h > 0) ? (centered_val - f_ymin) / f_h : 0.0f;
-				float y_pos = canvas_pos.y + disp_h - (y_ratio * disp_h);
-				
-				draw_list->AddLine(ImVec2(canvas_pos.x - 5, y_pos), ImVec2(canvas_pos.x, y_pos), tick_col);
-				draw_list->AddLine(ImVec2(canvas_pos.x + disp_w, y_pos), ImVec2(canvas_pos.x + disp_w + 5, y_pos), tick_col);
-				
-				char buf[16]; snprintf(buf, 16, "%g", val);
-				ImVec2 ts = ImGui::CalcTextSize(buf);
-
-				float left_label_x = canvas_pos.x - 10.0f - ts.x;
-				draw_list->AddText(ImVec2(left_label_x, y_pos - ts.y * 0.5f), tick_col, buf);
-				
-				float right_label_x = canvas_pos.x + disp_w + 10.0f;
-				draw_list->AddText(ImVec2(right_label_x, y_pos - ts.y * 0.5f), tick_col, buf);
-			}
-			
-			draw_list->AddRect(canvas_pos, ImVec2(canvas_pos.x + disp_w, canvas_pos.y + disp_h), tick_col);
-
-			float cb_w = 15.0f;
-			float cb_h = disp_h;
-			float cb_x = canvas_pos.x + disp_w + 65.0f;
-			float cb_y = canvas_pos.y;
-
-			const auto& palette = cmap_manager.palettes[selected_cmap].cpu_data;
-
-			for (int i = 0; i < 256; ++i)
-			{
-				float y0 = cb_y + cb_h - ((float)(i + 1) / 256.0f) * cb_h;
-				float y1 = cb_y + cb_h - ((float)i / 256.0f) * cb_h;
-				
-				ImU32 col = IM_COL32(palette[i * 3 + 0], palette[i * 3 + 1], palette[i * 3 + 2], 255);
-				draw_list->AddRectFilled(ImVec2(cb_x, y0), ImVec2(cb_x + cb_w, y1), col);
-			}
-
-			draw_list->AddRect(ImVec2(cb_x, cb_y), ImVec2(cb_x + cb_w, cb_y + cb_h), tick_col);
-
-			float v_range = v_max - v_min;
-			float v_step = CalculateNiceStep(v_range, 8);
-			float start_v = std::floor(v_min / v_step) * v_step;
-
-			for (float val = start_v; val <= v_max + (v_step * 0.01f); val += v_step)
-			{
-				if (val < v_min || val > v_max)
-				{
-					continue;
-				}
-
-				float norm = (v_max != v_min) ? (val - v_min) / (v_max - v_min) : 0.5f;
-				float py = cb_y + cb_h - (norm * cb_h);
-
-				draw_list->AddLine(ImVec2(cb_x + cb_w, py), ImVec2(cb_x + cb_w + 5, py), tick_col);
-
-				if (std::abs(val) < v_step * 1e-4f) 
-				{
-					val = 0.0f;
-				}
-				
-				char val_buf[32];
-				snprintf(val_buf, 32, "%.3g", val);
-				draw_list->AddText(ImVec2(cb_x + cb_w + 12, py - ImGui::GetTextLineHeight() * 0.5f), tick_col, val_buf);
-			}
-
-			int fits_w = data.naxis1;
-			int fits_h = data.naxis2;
-			ImVec2 m_delta = ImGui::GetIO().MouseDelta;
-
-			int n_dims[3] = {data.naxis1, data.naxis2, data.naxis3};
-
-			int cur_nx = n_dims[axis_x];
-			int cur_ny = n_dims[axis_y];
-
-			if (ImGui::IsItemHovered()) 
-			{
-				if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) 
-				{
-					float fits_units_per_pixel_x = (app_view.x_max - app_view.x_min) / disp_w;
-					float fits_units_per_pixel_y = (app_view.y_max - app_view.y_min) / disp_h;
-					app_view.x_min -= m_delta.x * fits_units_per_pixel_x;
-					app_view.x_max -= m_delta.x * fits_units_per_pixel_x;
-					app_view.y_min += m_delta.y * fits_units_per_pixel_y;
-					app_view.y_max += m_delta.y * fits_units_per_pixel_y;
-					needs_update = true;
-				}
-
-				if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) 
-				{
-					if (!drag_roi.active) 
-					{
-						ScreenToFitsIdx(ImGui::GetIO().MouseClickedPos[0], &drag_roi.x0, &drag_roi.y0, app_view, canvas_p0, canvas_sz, cur_nx, cur_ny);
-						drag_roi.active = true;
-						drag_button = 0;
-					}
-				}
-
-				if (ImGui::IsMouseDragging(ImGuiMouseButton_Right)) 
-				{
-					if (!drag_roi.active) 
-					{
-						ScreenToFitsIdx(ImGui::GetIO().MouseClickedPos[1], &drag_roi.x0, &drag_roi.y0, app_view, canvas_p0, canvas_sz, cur_nx, cur_ny);
-						drag_roi.active = true;
-						drag_button = 1;
-					}
-				}
-			}
-
-			if (drag_roi.active) 
-			{
-				ScreenToFitsIdx(ImGui::GetMousePos(), &drag_roi.x1, &drag_roi.y1, app_view, canvas_p0, canvas_sz, cur_nx, cur_ny);
-			}
-
-			if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) 
-			{
-				if (drag_roi.active && drag_button == 0) 
-				{
-					spectrum = CalculateAverageSpectrum(data, drag_roi, axis_map, n_dims);
-					persistent_roi = drag_roi;
-					show_persistent_roi = true;
-					drag_roi.active = false;
-					drag_button = -1;
-					needs_update = true;
-				} 
-				else if (!drag_roi.active && ImGui::IsItemHovered()) 
-				{
-					ScreenToFitsIdx(ImGui::GetMousePos(), &clicked_ix, &clicked_iy, app_view, canvas_p0, canvas_sz, cur_nx, cur_ny);
-					spectrum = ExtractPointSpectrum(data, clicked_ix, clicked_iy, axis_map, n_dims);
-					show_persistent_roi = false;
-					needs_update = true;
-				}
-			}
-
-			if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) 
-			{
-				if (drag_roi.active && drag_button == 1) 
-				{
-					ApplyZoom(drag_roi, app_view);
-					drag_roi.active = false;
-					drag_button = -1;
-					needs_update = true;
-				}
-			}
-
-			float wheel = ImGui::GetIO().MouseWheel;
-
-			if (wheel != 0.0f && ImGui::IsItemHovered())
-			{
-				float zoom_factor = (wheel > 0.0f) ? 0.9f : 1.1f;
-				float canvas_aspect = canvas_sz.y / canvas_sz.x;
-
-				float u = std::clamp((ImGui::GetMousePos().x - canvas_p0.x) / canvas_sz.x, 0.0f, 1.0f);
-				float v = std::clamp((ImGui::GetMousePos().y - canvas_p0.y) / canvas_sz.y, 0.0f, 1.0f);
-				
-				float fx = app_view.x_min + u * (app_view.x_max - app_view.x_min);
-				float fy = app_view.y_min + (1.0f - v) * (app_view.y_max - app_view.y_min);
-
-				float cur_w = app_view.x_max - app_view.x_min;
-				float next_w = cur_w * zoom_factor;
-
-				const float MIN_VISIBLE_WIDTH = 0.5f;
-				float data_aspect = (float)cur_ny / (float)cur_nx;
-				float max_w = (data_aspect > canvas_aspect) ? ((float)cur_ny / canvas_aspect) : (float)cur_nx;
-
-				next_w = std::clamp(next_w, MIN_VISIBLE_WIDTH, max_w);
-				float next_h = next_w * canvas_aspect;
-
-				if (std::abs(next_w - cur_w) > 1e-5f)
-				{
-					app_view.x_min = fx - u * next_w;
-					app_view.x_max = app_view.x_min + next_w;
-					app_view.y_min = fy - (1.0f - v) * next_h;
-					app_view.y_max = app_view.y_min + next_h;
-
-					needs_update = true;
-				}
-			}
-
-			if (auto_slice_mode == true && needs_update == true)
-			{
-				trigger_auto = true;
-			}
-
-			if (trigger_auto)
-			{
-				int nx = n_dims[axis_x];
-				int ny = n_dims[axis_y];
-				float mi = std::numeric_limits<float>::max();
-				float ma = -std::numeric_limits<float>::max();
-
-				int ix0 = 0;
-				int iy0 = 0;
-				int ix1 = nx;
-				int iy1 = ny;
-
-				if(auto_region == true)
-				{
-					ix0 = (int)std::floor(app_view.x_min);
-					iy0 = (int)std::floor(app_view.y_min);
-					ix1 = (int)std::ceil(app_view.x_max);
-					iy1 = (int)std::ceil(app_view.y_max);
-
-					if(ix0 < 0)
-					{
-						ix0 = 0;
-					}
-					else if(ix0 > nx)
-					{
-						ix0 = nx;
-					}
-					
-					if(iy0 < 0)
-					{
-						iy0 = 0;
-					}
-					else if(iy0 > ny)
-					{
-						iy0 = ny;
-					}
-
-					if(ix1 < 0)
-					{
-						ix1 = 0;
-					}
-					else if(ix1 > nx)
-					{
-						ix1 = nx;
-					}
-
-					if(iy1 < 0)
-					{
-						iy1 = 0;
-					}
-					else if(iy1 > ny)
-					{
-						iy1 = ny;
-					}
-				}
-
-				bool found = false;
-
-				for (int y = iy0; y < iy1; ++y)
-				{
-					for (int x = ix0; x < ix1; ++x)
-					{
-						int coords[3];
-						coords[axis_x] = x;
-						coords[axis_y] = y;
-						coords[axis_z] = current_slice;
-
-						size_t idx = (size_t)coords[2] * (data.naxis1 * data.naxis2) + (size_t)coords[1] * data.naxis1 + coords[0];
-						float val = data.cube[idx];
-
-						if (std::isfinite(val))
-						{
-							if (val < mi)
-							{
-								mi = val;
-							}
-
-							if (val > ma)
-							{
-								ma = val;
-							}
-
-							found = true;
-						}
-					}
-				}
-				if(found)
-				{
-					v_min = mi;
-					v_max = ma;
-
-					if (v_min == v_max)
-					{
-						v_max = v_min + 1.0f;
-					}
-
-					needs_update = true;
-				}
-			}
-
-			float canvas_aspect = disp_h / disp_w;
-
-			float cur_vw = app_view.x_max - app_view.x_min;
-			float cur_vh = app_view.y_max - app_view.y_min;
-
-			if (cur_vh / cur_vw < canvas_aspect) 
-			{
-				float target_vh = cur_vw * canvas_aspect;
-				float center_y = (app_view.y_min + app_view.y_max) * 0.5f;
-				app_view.y_min = center_y - target_vh * 0.5f;
-				app_view.y_max = center_y + target_vh * 0.5f;
-			} 
-			else 
-			{
-				float target_vw = cur_vh / canvas_aspect;
-				float center_x = (app_view.x_min + app_view.x_max) * 0.5f;
-				app_view.x_min = center_x - target_vw * 0.5f;
-				app_view.x_max = center_x + target_vw * 0.5f;
-			}
-
-			if (needs_update)
-			{
-				int ix0 = (int)std::floor(app_view.x_min);
-				int iy0 = (int)std::floor(app_view.y_min);
-				int ix1 = (int)std::ceil(app_view.x_max);
-				int iy1 = (int)std::ceil(app_view.y_max);
-
-				int tw = ix1 - ix0;
-				int th = iy1 - iy0;
-
-				if (tw >= 1 && th >= 1)
-				{
-					std::vector<uint8_t> rgb_buf((size_t)tw * th * 3);
-					const auto& lut = cmap_manager.palettes[selected_cmap].cpu_data;
-
-					for (int y = 0; y < th; ++y)
-					{
-						for (int x = 0; x < tw; ++x)
-						{
-							int tx = ix0 + x;
-							int ty = iy0 + y;
-							size_t out_idx = (size_t)y * tw + x;
-
-							if (tx >= 0 && tx < n_dims[axis_x] && ty >= 0 && ty < n_dims[axis_y])
-							{
-								int coords[3];
-								coords[axis_x] = tx;
-								coords[axis_y] = ty;
-								coords[axis_z] = current_slice;
-
-								size_t raw_idx = (size_t)coords[2] * ((size_t)data.naxis1 * data.naxis2) + (size_t)coords[1] * data.naxis1 + coords[0];
-
-								float val = data.cube[raw_idx];
-								float norm = std::clamp((val - v_min) / (v_max - v_min), 0.0f, 1.0f);
-								int lut_idx = (int)(norm * 255.0f);
-								
-								rgb_buf[out_idx * 3 + 0] = lut[lut_idx * 3 + 0];
-								rgb_buf[out_idx * 3 + 1] = lut[lut_idx * 3 + 1];
-								rgb_buf[out_idx * 3 + 2] = lut[lut_idx * 3 + 2];
-							}
-							else
-							{
-								rgb_buf[out_idx * 3 + 0] = 30;
-								rgb_buf[out_idx * 3 + 1] = 30;
-								rgb_buf[out_idx * 3 + 2] = 30;
-							}
-						}
-					}
-
-					glBindTexture(GL_TEXTURE_2D, image_texture);
-					glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tw, th, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb_buf.data());
-				}
-
-				needs_update = false;
-			}
-		}
+		RenderImageViewer(state, cmap_manager);
 		ImGui::End();
 
 		ImGui::SetNextWindowPos(ImVec2(v_pos.x + SIDEBAR_W, v_pos.y + main_h));
 		ImGui::SetNextWindowSize(ImVec2(main_w, BOTTOM_H));
 		ImGui::Begin("Spectrum", nullptr, static_flags);
-
-		auto ScreenToSpecX = [&](ImVec2 mouse_pos, ImVec2 plot_p0, ImVec2 plot_sz, const SpecViewState& vp) -> float
-		{
-			float u = std::clamp((mouse_pos.x - plot_p0.x) / plot_sz.x, 0.0f, 1.0f);
-			return vp.x_min + u * (vp.x_max - vp.x_min);
-		};
-		
-		if (!spectrum.empty())
-		{
-			ImGui::Separator();
-			const char* modes[] = {"Index", "WCS", "LUT"};
-			int current_mode = (int)app_spec_view.mode;
-
-			ImGui::AlignTextToFramePadding();
-			ImGui::Text("X Axis Mode");
-			ImGui::SameLine();
-			ImGui::SetNextItemWidth(140.0f);
-
-			if (ImGui::Combo("##X-Axis Mode", &current_mode, modes, 3))
-			{
-				app_spec_view.mode = (XAxisMode)current_mode;
-				app_spec_view.initialized = false;
-			}
-
-			if(app_spec_view.mode != XAxisMode::Index)
-			{
-				ImGui::SameLine();
-			}
-			
-			if (app_spec_view.mode == XAxisMode::Index)
-			{
-				;
-			}
-			else if (app_spec_view.mode == XAxisMode::WCS)
-			{
-				int auto_axis = 4 - (axis_x + axis_y);
-
-				if (selected_wcs_axis != auto_axis) 
-				{
-					selected_wcs_axis = auto_axis;
-					UpdateWCSParams(data, selected_wcs_axis);
-					app_spec_view.initialized = false;
-				}
-
-				ImGui::SameLine();			
-				ImGui::Text("CRVAL: %.4e, CDELT: %.4e, CRPIX: %.1f", data.wcs_crval, data.wcs_cdelt, data.wcs_crpix);
-			}
-			else if (app_spec_view.mode == XAxisMode::Table)
-			{
-				std::string current_label = active_lut ? data.extensions[selected_hdu_idx].columns[selected_col_idx].name : "Select Column...";
-				
-				ImGui::SetNextItemWidth(300.0f);
-				if (ImGui::BeginCombo("##LUT_Tree", current_label.c_str()))
-				{
-					int naxes[3] = { data.naxis1, data.naxis2, data.naxis3 };
-					int spec_axis_idx = 3 - (axis_x + axis_y);
-					
-					for (int h = 0; h < (int)data.extensions.size(); ++h)
-					{
-						auto& hdu = data.extensions[h];
-						
-						if (ImGui::TreeNode((void*)(intptr_t)h, "HDU %d: %s", h + 1, hdu.name.c_str()))
-						{
-							for (int c = 0; c < (int)hdu.columns.size(); ++c)
-							{
-								bool size_match = (hdu.columns[c].data.size() == (size_t)naxes[spec_axis_idx]);
-								bool is_selected = (selected_hdu_idx == h && selected_col_idx == c);
-
-								if (!size_match)
-								{
-									ImGui::BeginDisabled();
-								}
-
-								std::string item_label = hdu.columns[c].name + " (" + std::to_string(hdu.columns[c].data.size()) + ")";
-
-								if (ImGui::Selectable(item_label.c_str(), is_selected))
-								{
-									selected_hdu_idx = h;
-									selected_col_idx = c;
-									active_lut = &hdu.columns[c].data;
-
-									if (active_lut && !active_lut->empty())
-									{
-										app_spec_view.x_min = active_lut->front();
-										app_spec_view.x_max = active_lut->back();
-									}
-
-									app_spec_view.initialized = false;
-								}
-
-								if (!size_match)
-								{
-									ImGui::EndDisabled();
-
-									if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-									{
-										ImGui::SetTooltip("Dimension mismatch. Expected: %d", data.naxis1);
-									}
-								}
-							}
-							ImGui::TreePop();
-						}
-					}
-					ImGui::EndCombo();
-				}
-			}
-
-			size_t spec_size = spectrum.size();
-			spectral_grid.resize(spec_size);
-
-			if (app_spec_view.mode == XAxisMode::WCS)
-			{
-				for (size_t i = 0; i < spec_size; ++i)
-				{
-					spectral_grid[i] = data.wcs_crval + ((float)i + 1.0f - data.wcs_crpix) * data.wcs_cdelt;
-				}
-			}
-			else if (app_spec_view.mode == XAxisMode::Table && active_lut)
-			{
-				if (active_lut->size() == spec_size)
-				{
-					spectral_grid = *active_lut; 
-				}
-				else
-				{
-					for (size_t i = 0; i < spec_size; ++i)
-					{
-						spectral_grid[i] = (float)i;
-					}
-				}
-			}
-			else
-			{
-				for (size_t i = 0; i < spec_size; ++i)
-				{
-					spectral_grid[i] = (float)i;
-				}
-			}
-			
-			if (!app_spec_view.initialized)
-			{
-				ResetSpecView(app_spec_view, spectrum, spectral_grid);
-			}
-			
-			if (current_tool == ToolMode::Average || show_persistent_roi)
-			{
-				const ROI& display_roi = drag_roi.active ? drag_roi : persistent_roi;
-
-				ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "ROI Average:");
-				ImGui::SameLine();
-
-				int xmin = std::min(display_roi.x0, display_roi.x1);
-				int xmax = std::max(display_roi.x0, display_roi.x1);
-				int ymin = std::min(display_roi.y0, display_roi.y1);
-				int ymax = std::max(display_roi.y0, display_roi.y1);
-
-				ImGui::Text("X[%d:%d], Y[%d:%d]", xmin, xmax, ymin, ymax);
-			}
-			else
-			{
-				ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Point Probe:");
-				ImGui::SameLine();
-				ImGui::Text("x=%d, y=%d", clicked_ix, clicked_iy);
-			}
-
-			char range_buf[64];
-			snprintf(range_buf, 64, "Range: [%.3f:%.3f]", app_spec_view.x_min, app_spec_view.x_max);
-			
-			float text_width = ImGui::CalcTextSize(range_buf).x;
-			float button_width = 80.0f;
-			float spacing = ImGui::GetStyle().ItemSpacing.x;
-			float padding = ImGui::GetStyle().WindowPadding.x;
-
-			float total_needed_width = text_width + spacing + button_width + padding;
-			ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - total_needed_width));
-
-			ImGui::AlignTextToFramePadding();
-			ImGui::Text("%s", range_buf);
-			ImGui::SameLine();
-
-			if (ImGui::Button("Reset", ImVec2(button_width, 0)))
-			{
-				ResetSpecView(app_spec_view, spectrum, spectral_grid);
-			}
-			
-			if (!app_spec_view.initialized && !spectral_grid.empty())
-			{
-				auto [s_min_it, s_max_it] = std::minmax_element(spectral_grid.begin(), spectral_grid.end());				
-				app_spec_view.x_min = *s_min_it;
-				app_spec_view.x_max = *s_max_it;
-				app_spec_view.initialized = true;
-			}
-
-			ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
-			ImVec2 canvas_sz = ImVec2(ImGui::GetContentRegionAvail().x, 220);
-
-			const float m_left = 80.0f;
-			const float m_right = 20.0f;
-			const float m_top = 10.0f;
-			const float m_bottom = 30.0f;
-
-			ImVec2 plot_p0 = ImVec2(canvas_p0.x + m_left, canvas_p0.y + m_top);
-			ImVec2 plot_sz = ImVec2(canvas_sz.x - (m_left + m_right), canvas_sz.y - (m_top + m_bottom));
-
-			auto ScreenToSpecX = [](ImVec2 pos, ImVec2 p0, ImVec2 sz, const SpecViewState& vp) -> float
-			{
-				float u = std::clamp((pos.x - p0.x) / sz.x, 0.0f, 1.0f);
-				return vp.x_min + u * (vp.x_max - vp.x_min);
-			};
-
-			ImGui::InvisibleButton("spec_interaction", canvas_sz);
-			bool is_hovered = ImGui::IsItemHovered();
-
-			if (is_hovered)
-			{
-				if (ImGui::IsMouseDragging(ImGuiMouseButton_Right))
-				{
-					if (!spec_dragging)
-					{
-						spec_drag_start_x = ScreenToSpecX(ImGui::GetIO().MouseClickedPos[1], plot_p0, plot_sz, app_spec_view);
-						spec_dragging = true;
-					}
-
-					spec_drag_current_x = ScreenToSpecX(ImGui::GetMousePos(), plot_p0, plot_sz, app_spec_view);
-				}
-
-				if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && spec_dragging)
-				{
-					float x0 = std::min(spec_drag_start_x, spec_drag_current_x);
-					float x1 = std::max(spec_drag_start_x, spec_drag_current_x);
-					// std::cout << "range: " << x0 << ", " << x1 << std::endl;
-					float drag_dist_px = std::abs(ImGui::GetMousePos().x - ImGui::GetIO().MouseClickedPos[1].x);
-
-					if (drag_dist_px > 3.0f)
-					{
-						app_spec_view.x_min = x0;
-						app_spec_view.x_max = x1;
-					}
-					spec_dragging = false;
-				}
-
-				if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Right))
-				{
-					ResetSpecView(app_spec_view, spectrum, spectral_grid);
-				}
-			}
-
-			ImGui::SetCursorScreenPos(canvas_p0);
-			
-			// if (!spectrum.empty())
-			// {
-			// 	auto it_s = std::lower_bound(spectral_grid.begin(), spectral_grid.end(), app_spec_view.x_min);
-			// 	auto it_e = std::lower_bound(spectral_grid.begin(), spectral_grid.end(), app_spec_view.x_max);
-				
-			// 	int start_i = (int)std::distance(spectral_grid.begin(), it_s);
-			// 	int end_i   = (int)std::distance(spectral_grid.begin(), it_e);
-
-			// 	if (start_i > end_i)
-			// 	{
-			// 		std::swap(start_i, end_i);
-			// 	}
-
-			// 	start_i = std::clamp(start_i, 0, (int)spectrum.size() - 1);
-			// 	end_i   = std::clamp(end_i, 0, (int)spectrum.size() - 1);
-
-			// 	float v_min = FLT_MAX;
-			// 	float v_max = -FLT_MAX;
-
-			// 	for (int i = start_i; i <= end_i; i++)
-			// 	{
-			// 		if (spectrum[i] < v_min) v_min = spectrum[i];
-			// 		if (spectrum[i] > v_max) v_max = spectrum[i];
-			// 	}
-
-			// 	if (v_min == v_max || v_min == FLT_MAX)
-			// 	{
-			// 		v_min -= 1.0f;
-			// 		v_max += 1.0f;
-			// 	}
-			// 	else
-			// 	{
-			// 		float pad = (v_max - v_min) * 0.1f;
-			// 		v_min -= pad;
-			// 		v_max += pad;
-			// 	}
-
-			// 	app_spec_view.y_min = v_min;
-			// 	app_spec_view.y_max = v_max;
-			// }
-
-			if (!spectrum.empty() && spectrum.size() == spectral_grid.size())
-			{
-				float v_min = FLT_MAX;
-				float v_max = -FLT_MAX;
-				
-				float x_low  = std::min(app_spec_view.x_min, app_spec_view.x_max);
-				float x_high = std::max(app_spec_view.x_min, app_spec_view.x_max);
-				bool found = false;
-
-				for (size_t i = 0; i < spectral_grid.size(); ++i)
-				{
-					if (spectral_grid[i] >= x_low && spectral_grid[i] <= x_high)
-					{
-						if (spectrum[i] < v_min) v_min = spectrum[i];
-						if (spectrum[i] > v_max) v_max = spectrum[i];
-						found = true;
-					}
-				}
-
-				if (!found || v_min == v_max || v_min == FLT_MAX)
-				{
-					v_min = (v_min == FLT_MAX) ? 0.0f : v_min - 1.0f;
-					v_max = (v_max == -FLT_MAX) ? 1.0f : v_max + 1.0f;
-				}
-				else
-				{
-					float pad = (v_max - v_min) * 0.1f;
-					v_min -= pad;
-					v_max += pad;
-				}
-
-				app_spec_view.y_min = v_min;
-				app_spec_view.y_max = v_max;
-			}
-
-			// std::cout << "spectral grid" << std::endl;
-			// for(int i = 0; i < spectral_grid.size(); ++i)
-			// {
-			// 	std::cout << spectral_grid[i] << std::endl;
-			// }
-			// std::cout << "end" << std::endl;
-			DrawCustomSpectrum(spectrum, spectral_grid, app_spec_view.x_min, app_spec_view.x_max, app_spec_view.y_min, app_spec_view.y_max, current_slice);
-
-			if (spec_dragging) 
-			{
-				ImDrawList* draw_list = ImGui::GetWindowDrawList();
-				float view_w = app_spec_view.x_max - app_spec_view.x_min;
-				float px0 = plot_p0.x + (std::min(spec_drag_start_x, spec_drag_current_x) - app_spec_view.x_min) / view_w * plot_sz.x;
-				float px1 = plot_p0.x + (std::max(spec_drag_start_x, spec_drag_current_x) - app_spec_view.x_min) / view_w * plot_sz.x;
-				
-				draw_list->AddRectFilled(ImVec2(px0, plot_p0.y), ImVec2(px1, plot_p0.y + plot_sz.y), IM_COL32(60, 150, 255, 60));
-				draw_list->AddLine(ImVec2(px0, plot_p0.y), ImVec2(px0, plot_p0.y + plot_sz.y), IM_COL32(60, 150, 255, 200));
-				draw_list->AddLine(ImVec2(px1, plot_p0.y), ImVec2(px1, plot_p0.y + plot_sz.y), IM_COL32(60, 150, 255, 200));
-			}
-		}
-		else
-		{
-			ImGui::TextDisabled("Click or drag on the image to analyze data.");
-		}
-
+		RenderSpectrumViewer(state);
 		ImGui::End();
 		
 		ImGui::Render();
